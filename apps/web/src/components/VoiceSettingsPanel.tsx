@@ -113,11 +113,14 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       return;
     }
 
+    setSelectedGuildId(targetGid);
+    setSelectedVcId(targetVc);
     setLoading(true);
     setError('');
     setStatusMessage('');
 
     try {
+      // 1. Instruct worker to switch voice channel
       const res = await fetch('/api/discord/join-vc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -125,10 +128,27 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       });
       const data = await res.json();
 
+      // 2. Persist to settings store immediately
+      const settingsRes = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: userId.trim(),
+          autoFollow,
+          selectedGuildId: targetGid,
+          selectedVoiceChannelId: targetVc,
+          defaultQuality,
+          autoEnglishSubs,
+          intermissionSeconds,
+        }),
+      });
+      const settingsData = await settingsRes.json();
+
       if (data.success) {
         const channelName = voiceChannels.find((v: any) => v.id === targetVc)?.name || 'Voice Channel';
         setStatusMessage(`🔊 Streamer successfully joined "${channelName}"! All future movies will stream here.`);
         if (onVoiceChannelChanged) onVoiceChannelChanged(targetGid, targetVc);
+        if (onSettingsSaved && settingsData.settings) onSettingsSaved(settingsData.settings);
       } else {
         setError(data.error || 'Failed to join voice channel');
       }
@@ -567,7 +587,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
                   Select Voice Channel
                 </label>
                 <select
-                  value={selectedVcId}
+                  value={selectedVcId || (voiceChannels[0]?.id ?? '')}
                   onChange={(e) => setSelectedVcId(e.target.value)}
                   className="w-full bg-[#161924] border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
                 >
