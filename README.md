@@ -17,7 +17,7 @@ A production-grade Discord Movie & TV streaming platform and Web Cinema Controll
   * **Persistent Channel Target**: Saves your active Voice Channel selection so opening a movie never reverts to `#General`.
 * **🌐 Sleek Web Controller & Remote (`apps/web`)**:
   * **Interactive Remote**: Real-time scrubbing progress bar, seek, play/pause, rewind/forward, and stop buttons.
-  * **7-Day Persistent Auth**: Minimalist cinematic login (`senzu` / `herewegoagain`) with auto-renewing secure cookies.
+  * **7-Day Persistent Auth**: Minimalist cinematic login with auto-renewing secure cookies.
   * **Dynamic Stream Resolution**: Instant quality switcher pills with zero audio/video desync.
   * **Frame-Perfect Subtitles**: Hybrid 2-tier subtitle engine (probe embedded text tracks `[Embedded ⚡]` + multi-track OpenSubtitles) with real-time `[ -1.0s ]` `[ -0.5s ]` `[ 0s ]` `[ +0.5s ]` `[ +1.0s ]` micro-delay timing adjusters.
 * **📜 Interactive & Scrollable Playback Queue**:
@@ -87,11 +87,11 @@ pnpm start:web
 
 ---
 
-## 🔐 Web Dashboard Credentials
+## 🔐 Web Dashboard Authentication
 
 * **URL**: `http://localhost:3000` (or your deployed Vercel URL)
-* **Username**: `senzu`
-* **Password**: `herewegoagain`
+* **Default Username**: `senzu` (Configurable via `WEB_USERNAME` in `.env`)
+* **Password**: Configurable via `WEB_PASSWORD` in `.env` (Never commit secrets to git)
 * **Session Lifespan**: 7 Days (Persistent & Auto-Renewing)
 
 ---
