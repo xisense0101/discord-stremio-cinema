@@ -19,9 +19,15 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@discord-stremio/config": ["../../packages/config/src/index.ts"],
+      "@discord-stremio/metadata": ["../../packages/metadata/src/index.ts"],
+      "@discord-stremio/playback": ["../../packages/playback/src/index.ts"],
+      "@discord-stremio/queue": ["../../packages/queue/src/index.ts"],
+      "@discord-stremio/sessions": ["../../packages/sessions/src/index.ts"],
+      "@discord-stremio/diagnostics": ["../../packages/diagnostics/src/index.ts"]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "../../packages/**/*.ts"],
   "exclude": ["node_modules"]
 }
