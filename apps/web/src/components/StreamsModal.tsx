@@ -135,9 +135,8 @@ export const StreamsModal: React.FC<StreamsModalProps> = ({
   const handlePlay = async (stream: StreamItem) => {
     setPlayingStreamId(stream.id || stream.url);
     try {
-      // Default to 720p unless the stream is 480p or user explicitly set higher
-      const targetTranscodeQuality = defaultQuality || '720p';
-      await onPlayStream(media, stream, targetTranscodeQuality);
+      const streamQuality = stream.quality && stream.quality !== 'other' ? stream.quality : (defaultQuality || '720p');
+      await onPlayStream(media, stream, streamQuality);
       onClose();
     } finally {
       setPlayingStreamId(null);
@@ -148,8 +147,8 @@ export const StreamsModal: React.FC<StreamsModalProps> = ({
     if (!onQueueStream) return;
     setQueuedStreamId(stream.id || stream.url);
     try {
-      const targetTranscodeQuality = defaultQuality || '720p';
-      await onQueueStream(media, stream, targetTranscodeQuality);
+      const streamQuality = stream.quality && stream.quality !== 'other' ? stream.quality : (defaultQuality || '720p');
+      await onQueueStream(media, stream, streamQuality);
       setTimeout(() => setQueuedStreamId(null), 2000);
     } finally {
       // Keep open or let user queue multiple

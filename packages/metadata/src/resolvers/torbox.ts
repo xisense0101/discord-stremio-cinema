@@ -169,13 +169,14 @@ export class TorBoxStreamResolver {
     }
 
     let quality: MediaStream['quality'] = 'other';
-    if (fullText.includes('1080p') || fullText.includes('1920x1080') || fullText.includes('fhd')) {
-      quality = '1080p';
-    } else if (fullText.includes('720p') || fullText.includes('1280x720') || fullText.includes('hd')) {
-      quality = '720p';
-    } else if (fullText.includes('2160p') || fullText.includes('4k') || fullText.includes('uhd')) {
+    // Check 4K / 2160p first to avoid false matching from HDR10 / UHD
+    if (/\b(4k|2160p|uhd|ultrahd)\b/i.test(fullText) || fullText.includes('2160p') || fullText.includes('4k')) {
       quality = '4k';
-    } else if (fullText.includes('480p') || fullText.includes('sd')) {
+    } else if (/\b(1080p|1080i|1920x1080|fhd|fullhd)\b/i.test(fullText) || fullText.includes('1080p')) {
+      quality = '1080p';
+    } else if (/\b(720p|1280x720)\b/i.test(fullText) || fullText.includes('720p') || fullText.includes('1280x720') || (/\bhd\b/i.test(fullText) && !/\b(hdr|uhd|fullhd|hdrip)\b/i.test(fullText))) {
+      quality = '720p';
+    } else if (/\b(480p|576p|dvdrip|sd)\b/i.test(fullText) || fullText.includes('480p')) {
       quality = '480p';
     }
 
@@ -212,7 +213,7 @@ export class TorBoxStreamResolver {
     return {
       id: raw.infoHash || raw.url || Math.random().toString(36).substring(2, 9),
       name: raw.name || 'TorBox Stream',
-      title: raw.title || raw.name || '1080p Stream',
+      title: raw.title || raw.name || 'Stream',
       quality,
       resolution: quality,
       isCached,
@@ -228,16 +229,16 @@ export class TorBoxStreamResolver {
 
   private rankStreams(streams: MediaStream[], preferredQuality: string = '720p'): MediaStream[] {
     const pref = preferredQuality.toLowerCase().trim();
-    let qualityPriority: Record<string, number> = { '720p': 1, '1080p': 2, '4k': 3, '480p': 4, 'other': 5 };
+    let qualityPriority: Record<string, number> = { '720p': 1, '1080p': 2, '480p': 3, '4k': 4, 'other': 5 };
 
     if (pref === '4k' || pref === '2160p' || pref === 'uhd') {
       qualityPriority = { '4k': 1, '1080p': 2, '720p': 3, '480p': 4, 'other': 5 };
     } else if (pref === '2k' || pref === '1440p' || pref === 'qhd') {
       qualityPriority = { '4k': 1, '1080p': 2, '720p': 3, '480p': 4, 'other': 5 };
     } else if (pref === '1080p' || pref === 'fhd') {
-      qualityPriority = { '1080p': 1, '720p': 2, '4k': 3, '480p': 4, 'other': 5 };
+      qualityPriority = { '1080p': 1, '720p': 2, '480p': 3, '4k': 4, 'other': 5 };
     } else if (pref === '720p' || pref === 'hd') {
-      qualityPriority = { '720p': 1, '1080p': 2, '4k': 3, '480p': 4, 'other': 5 };
+      qualityPriority = { '720p': 1, '1080p': 2, '480p': 3, '4k': 4, 'other': 5 };
     } else if (pref === '480p' || pref === 'sd') {
       qualityPriority = { '480p': 1, '720p': 2, '1080p': 3, '4k': 4, 'other': 5 };
     }

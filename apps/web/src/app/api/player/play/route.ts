@@ -37,7 +37,14 @@ export async function POST(req: NextRequest) {
       selectedStream = streams[0];
     }
 
-    // Open media in worker session with the requested targetQuality
+    // Play at the native quality of the selected torrent stream (or targetQuality)
+    const effectiveQuality = selectedStream.quality && selectedStream.quality !== 'other'
+      ? selectedStream.quality
+      : targetQuality;
+
+    console.log(`[API:Play] Playing "${mediaItem.name}" at native quality: ${effectiveQuality} (${selectedStream.title})`);
+
+    // Open media in worker session with native quality
     const res = await sendWorkerCommand(
       'OPEN_MEDIA',
       {
@@ -45,7 +52,7 @@ export async function POST(req: NextRequest) {
         title: mediaItem.name,
         imdbId: mediaItem.imdbId,
         type: mediaItem.type || 'movie',
-        quality: targetQuality, // Strictly use requested output resolution (e.g. 720p)
+        quality: effectiveQuality,
         voiceChannelId,
         initialTime,
       },
@@ -57,7 +64,7 @@ export async function POST(req: NextRequest) {
       success: res.success,
       state: res.state,
       stream: selectedStream,
-      targetQuality,
+      targetQuality: effectiveQuality,
       error: res.error,
     });
   } catch (err) {
