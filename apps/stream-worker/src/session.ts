@@ -91,7 +91,9 @@ export class WorkerGuildSession {
           signal: AbortSignal.timeout(8000),
         });
 
-        if (res.url && res.url.startsWith('http')) {
+        if (res.url && res.url.includes('slate.elfhosted.com')) {
+          console.warn(`[WorkerSession:${this.guildId}] Detected ElfHosted Slate IP-lock redirect: ${res.url.substring(0, 80)}...`);
+        } else if (res.url && res.url.startsWith('http')) {
           console.log(`[WorkerSession:${this.guildId}] Resolved CDN endpoint: ${res.url.split('?')[0]}`);
           return res.url;
         }
@@ -107,6 +109,8 @@ export class WorkerGuildSession {
     title: string;
     imdbId?: string;
     type?: 'movie' | 'series';
+    season?: number;
+    episode?: number;
     quality?: string;
     voiceChannelId: string;
     textChannelId?: string;
@@ -115,13 +119,36 @@ export class WorkerGuildSession {
     this.voiceChannelId = options.voiceChannelId;
     this.textChannelId = options.textChannelId || null;
     this.currentTitle = options.title;
-    this.currentStreamUrl = options.streamUrl;
     this.currentPosition = options.initialTime || 0;
     this.subtitleDelaySeconds = 0;
     this.playbackStatus = 'BUFFERING';
 
-    this.configureQuality(options.quality || '1080p');
-    console.log(`[WorkerSession:${this.guildId}] Opening media: "${this.currentTitle}" (Initial Quality: ${this.qualityLabel})`);
+    this.configureQuality(options.quality || '720p');
+    console.log(`[WorkerSession:${this.guildId}] Opening media: "${this.currentTitle}" (Quality: ${this.qualityLabel})`);
+
+    // Ensure playback URL is always resolved from Worker IP to avoid ElfHosted IP-lock mismatches
+    let streamUrlToUse = options.streamUrl;
+    if (options.imdbId && (!streamUrlToUse || streamUrlToUse.includes('elfhosted.com') || streamUrlToUse.includes('aiostreams'))) {
+      try {
+        console.log(`[WorkerSession:${this.guildId}] Resolving fresh stream URL from Worker IP for ${options.type || 'movie'} ${options.imdbId}...`);
+        const { resolveMediaStreams } = await import('@discord-stremio/metadata');
+        const streams = await resolveMediaStreams(
+          options.type || 'movie',
+          options.imdbId,
+          options.season,
+          options.episode,
+          options.quality || '720p'
+        );
+        if (streams && streams.length > 0) {
+          streamUrlToUse = streams[0].url;
+          console.log(`[WorkerSession:${this.guildId}] Worker IP stream resolved: "${streams[0].title}" (${streams[0].quality})`);
+        }
+      } catch (err) {
+        console.warn(`[WorkerSession:${this.guildId}] Worker IP stream resolution notice:`, (err as Error).message);
+      }
+    }
+
+    this.currentStreamUrl = streamUrlToUse;
 
     const targetVc = options.voiceChannelId || this.voiceChannelId;
     if (targetVc) {
@@ -146,8 +173,8 @@ export class WorkerGuildSession {
     }
 
     // 1. Resolve direct CDN URL first to give ffprobe instant zero-latency access
-    this.resolvedCdnUrl = await this.resolveFinalStreamUrl(options.streamUrl);
-    const probeTargetUrl = this.resolvedCdnUrl || options.streamUrl;
+    this.resolvedCdnUrl = await this.resolveFinalStreamUrl(streamUrlToUse);
+    const probeTargetUrl = this.resolvedCdnUrl || streamUrlToUse;
 
     // 2. Run embedded subtitle discovery, embedded audio discovery, external subtitle fetching in parallel
     const [rawExternalSubs, embeddedSubs, probedAudioTracks] = await Promise.all([
