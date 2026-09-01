@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   autoFollow: false,
   selectedGuildId: DEFAULT_GUILD_ID,
   selectedVoiceChannelId: DEFAULT_VOICE_CHANNEL_ID,
-  defaultQuality: '1080p',
+  defaultQuality: '720p',
   autoEnglishSubs: true,
   intermissionSeconds: 120,
 };

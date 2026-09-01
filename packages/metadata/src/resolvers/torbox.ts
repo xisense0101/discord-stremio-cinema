@@ -226,14 +226,16 @@ export class TorBoxStreamResolver {
     };
   }
 
-  private rankStreams(streams: MediaStream[], preferredQuality: string = '1080p'): MediaStream[] {
+  private rankStreams(streams: MediaStream[], preferredQuality: string = '720p'): MediaStream[] {
     const pref = preferredQuality.toLowerCase().trim();
-    let qualityPriority: Record<string, number> = { '1080p': 1, '720p': 2, '4k': 3, '480p': 4, 'other': 5 };
+    let qualityPriority: Record<string, number> = { '720p': 1, '1080p': 2, '4k': 3, '480p': 4, 'other': 5 };
 
     if (pref === '4k' || pref === '2160p' || pref === 'uhd') {
       qualityPriority = { '4k': 1, '1080p': 2, '720p': 3, '480p': 4, 'other': 5 };
     } else if (pref === '2k' || pref === '1440p' || pref === 'qhd') {
       qualityPriority = { '4k': 1, '1080p': 2, '720p': 3, '480p': 4, 'other': 5 };
+    } else if (pref === '1080p' || pref === 'fhd') {
+      qualityPriority = { '1080p': 1, '720p': 2, '4k': 3, '480p': 4, 'other': 5 };
     } else if (pref === '720p' || pref === 'hd') {
       qualityPriority = { '720p': 1, '1080p': 2, '4k': 3, '480p': 4, 'other': 5 };
     } else if (pref === '480p' || pref === 'sd') {

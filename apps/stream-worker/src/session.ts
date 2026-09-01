@@ -34,12 +34,12 @@ export class WorkerGuildSession {
   private availableSubtitlesMap: Map<string, SubtitleTrackInfo> = new Map();
   private subtitles: SubtitleTrack[] = [];
 
-  private currentQuality: string = '1080p';
-  private qualityLabel: string = '1080p FHD';
-  private streamWidth: number = 1920;
-  private streamHeight: number = 1080;
-  private streamBitrateKbps: number = 5000;
-  private streamMaxBitrateKbps: number = 7000;
+  private currentQuality: string = '720p';
+  private qualityLabel: string = '720p HD';
+  private streamWidth: number = 1280;
+  private streamHeight: number = 720;
+  private streamBitrateKbps: number = 2500;
+  private streamMaxBitrateKbps: number = 2500;
 
   private activeAudioStreamIndex: number = 0;
   private activeAudio: string = 'Default Audio';
@@ -475,13 +475,13 @@ export class WorkerGuildSession {
       this.streamHeight = 1440;
       this.streamBitrateKbps = 8000;
       this.streamMaxBitrateKbps = 10000;
-    } else if (q === '720p' || q === 'hd') {
-      this.currentQuality = '720p';
-      this.qualityLabel = '720p HD';
-      this.streamWidth = 1280;
-      this.streamHeight = 720;
-      this.streamBitrateKbps = 2500;
-      this.streamMaxBitrateKbps = 3500;
+    } else if (q === '1080p' || q === 'fhd') {
+      this.currentQuality = '1080p';
+      this.qualityLabel = '1080p FHD';
+      this.streamWidth = 1920;
+      this.streamHeight = 1080;
+      this.streamBitrateKbps = 4500;
+      this.streamMaxBitrateKbps = 4500;
     } else if (q === '480p' || q === 'sd') {
       this.currentQuality = '480p';
       this.qualityLabel = '480p SD';
@@ -490,13 +490,13 @@ export class WorkerGuildSession {
       this.streamBitrateKbps = 1200;
       this.streamMaxBitrateKbps = 1800;
     } else {
-      // Default 1080p FHD
-      this.currentQuality = '1080p';
-      this.qualityLabel = '1080p FHD';
-      this.streamWidth = 1920;
-      this.streamHeight = 1080;
-      this.streamBitrateKbps = 4500;
-      this.streamMaxBitrateKbps = 4500;
+      // Default 720p HD
+      this.currentQuality = '720p';
+      this.qualityLabel = '720p HD';
+      this.streamWidth = 1280;
+      this.streamHeight = 720;
+      this.streamBitrateKbps = 2500;
+      this.streamMaxBitrateKbps = 2500;
     }
   }
 

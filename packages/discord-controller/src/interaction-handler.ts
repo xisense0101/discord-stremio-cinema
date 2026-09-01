@@ -164,7 +164,7 @@ async function handleStreamCommand(
   type: 'movie' | 'series'
 ): Promise<void> {
   const title = interaction.options.getString('title') || interaction.options.getString('query') || '';
-  const initialQuality = interaction.options.getString('quality') || '1080p';
+  const initialQuality = interaction.options.getString('quality') || '720p';
 
   if (!title) {
     await interaction.reply({ content: '❌ Please provide a title to search.', ephemeral: true });
@@ -252,7 +252,7 @@ export async function handleComponentInteraction(
     const selectInter = interaction as StringSelectMenuInteraction;
     const selectedIdx = parseInt(selectInter.values[0].replace('item_', ''), 10);
     const media = cached.mediaItems[selectedIdx];
-    const initialQuality = cached.initialQuality || '1080p';
+    const initialQuality = cached.initialQuality || '720p';
     pendingSearches.delete(searchId);
 
     const voiceChannel = (interaction.member as GuildMember)?.voice?.channel;
@@ -451,7 +451,7 @@ async function startMediaPlayback(
   media: MediaItem,
   voiceChannelId: string,
   preselectedStream?: MediaStream,
-  initialQuality: string = '1080p'
+  initialQuality: string = '720p'
 ): Promise<void> {
   const guildId = interaction.guildId;
 

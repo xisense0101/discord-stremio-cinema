@@ -10,7 +10,7 @@ export const slashCommands = [
     .addStringOption((opt) =>
       opt
         .setName('quality')
-        .setDescription('Initial video quality (default: 1080p FHD)')
+        .setDescription('Initial video quality (default: 720p HD)')
         .setRequired(false)
         .addChoices(
           { name: '4K UHD (3840x2160 • 12 Mbps)', value: '4k' },
@@ -30,7 +30,7 @@ export const slashCommands = [
     .addStringOption((opt) =>
       opt
         .setName('quality')
-        .setDescription('Initial video quality (default: 1080p FHD)')
+        .setDescription('Initial video quality (default: 720p HD)')
         .setRequired(false)
         .addChoices(
           { name: '4K UHD (3840x2160 • 12 Mbps)', value: '4k' },
@@ -50,7 +50,7 @@ export const slashCommands = [
     .addStringOption((opt) =>
       opt
         .setName('quality')
-        .setDescription('Initial video quality (default: 1080p FHD)')
+        .setDescription('Initial video quality (default: 720p HD)')
         .setRequired(false)
         .addChoices(
           { name: '4K UHD (3840x2160 • 12 Mbps)', value: '4k' },
@@ -70,7 +70,7 @@ export const slashCommands = [
     .addStringOption((opt) =>
       opt
         .setName('quality')
-        .setDescription('Initial video quality (default: 1080p FHD)')
+        .setDescription('Initial video quality (default: 720p HD)')
         .setRequired(false)
         .addChoices(
           { name: '4K UHD (3840x2160 • 12 Mbps)', value: '4k' },

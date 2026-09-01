@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     guildId = guildId || settings.selectedGuildId || DEFAULT_GUILD_ID;
     voiceChannelId = voiceChannelId || settings.selectedVoiceChannelId || DEFAULT_VOICE_CHANNEL_ID;
     // Always fall back to user's saved defaultQuality if quality is not explicitly passed
-    const targetQuality = quality || settings.defaultQuality || '1080p';
+    const targetQuality = quality || settings.defaultQuality || '720p';
 
     console.log(`[API:Play] Playing "${mediaItem.name}" to Guild: ${guildId}, VoiceChannel: ${voiceChannelId} (Target Quality: ${targetQuality})`);
 
