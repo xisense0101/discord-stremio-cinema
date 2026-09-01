@@ -27,6 +27,7 @@ export interface PlayerState {
   intermissionRemaining?: number;
   audioTracks: AudioTrack[];
   activeAudio?: string;
+  activeAudioTrack?: number;
   volume: number;
   muted: boolean;
   fps: number;

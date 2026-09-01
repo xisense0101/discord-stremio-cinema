@@ -14,6 +14,7 @@ import {
   Check,
   Clock,
   Sparkles,
+  Headphones,
 } from 'lucide-react';
 
 interface PlayerRemoteProps {
@@ -74,6 +75,7 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
   ];
 
   const currentQualityNorm = (state.resolution || '1080p').toLowerCase();
+  const audioTracks = state.audioTracks || [];
 
   return (
     <div className="glass-panel-glow rounded-2xl p-6 border border-white/15 relative overflow-hidden">
@@ -98,16 +100,21 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
         <button
           onClick={() => onControl('STOP')}
           disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 text-xs font-medium transition-all active:scale-95"
+          className="px-3.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95"
         >
-          <Square className="w-3.5 h-3.5 fill-current" />
+          <Square className="w-3.5 h-3.5" />
           <span>Stop Stream</span>
         </button>
       </div>
 
-      {/* Scrub Progress Bar */}
+      {/* Scrubbing Timeline & Clock */}
       <div className="space-y-2 mb-6">
-        <div className="relative flex items-center group">
+        <div className="flex items-center justify-between text-xs text-gray-400 font-mono">
+          <span>{formatTime(currentTime)}</span>
+          <span className="text-gray-500">{formatTime(duration)}</span>
+        </div>
+
+        <div className="relative group">
           <input
             type="range"
             min={0}
@@ -116,17 +123,16 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
             onChange={handleSeekChange}
             onMouseUp={handleSeekCommit}
             onTouchEnd={handleSeekCommit}
-            className="w-full h-2.5 bg-[#1a1d29] rounded-lg appearance-none cursor-pointer focus:outline-none"
+            className="w-full h-2 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
+            style={{
+              background: `linear-gradient(to right, #6366f1 ${progressPercent}%, #1f2937 ${progressPercent}%)`,
+            }}
           />
-        </div>
-        <div className="flex items-center justify-between text-xs font-mono text-gray-400">
-          <span className="text-white font-medium">{formatTime(currentTime)}</span>
-          <span>{formatTime(duration)}</span>
         </div>
       </div>
 
-      {/* Main Playback Control Buttons */}
-      <div className="flex items-center justify-center gap-4 sm:gap-6 py-2 mb-8">
+      {/* Main Transport Control Buttons */}
+      <div className="flex items-center justify-center gap-4 mb-6">
         <button
           onClick={() => onControl('REWIND', { seconds: 10 })}
           disabled={loading}
@@ -139,14 +145,9 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
         <button
           onClick={() => onControl(isPlaying ? 'PAUSE' : 'RESUME')}
           disabled={loading}
-          className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-indigo-600 to-indigo-400 hover:from-indigo-500 hover:to-indigo-300 flex items-center justify-center text-white shadow-xl shadow-indigo-600/30 transition-all active:scale-95"
-          title={isPlaying ? 'Pause' : 'Play'}
+          className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-lg shadow-indigo-500/30 flex items-center justify-center transition-all active:scale-95"
         >
-          {isPlaying ? (
-            <Pause className="w-7 h-7 fill-current" />
-          ) : (
-            <Play className="w-7 h-7 fill-current ml-0.5" />
-          )}
+          {isPlaying ? <Pause className="w-7 h-7" /> : <Play className="w-7 h-7 ml-0.5" />}
         </button>
 
         <button
@@ -159,15 +160,15 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
         </button>
       </div>
 
-      {/* Bottom Grid: Quality & Subtitles */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-white/10">
-        {/* Quality Switcher */}
-        <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
+      {/* Bottom Grid: Quality, Audio Track & Subtitles */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-white/10">
+        {/* Card 1: Quality Switcher */}
+        <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col justify-between">
           <div className="flex items-center gap-2 text-xs font-semibold text-gray-300 mb-3">
             <Tv className="w-4 h-4 text-indigo-400" />
             <span>Stream Resolution</span>
           </div>
-          <div className="grid grid-cols-5 gap-1.5">
+          <div className="grid grid-cols-5 gap-1">
             {qualityOptions.map((q) => {
               const active = currentQualityNorm.includes(q.value);
               return (
@@ -175,7 +176,7 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
                   key={q.value}
                   onClick={() => onControl('SET_QUALITY', { quality: q.value })}
                   disabled={loading}
-                  className={`py-2 px-1 rounded-lg text-center text-xs font-medium transition-all ${
+                  className={`py-2 px-1 rounded-lg text-center text-[11px] font-medium transition-all ${
                     active
                       ? 'bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30'
                       : 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white'
@@ -189,7 +190,37 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
           </div>
         </div>
 
-        {/* Subtitle & Delay Timing Micro-Adjuster */}
+        {/* Card 2: Multi-Language Audio Track Selector */}
+        <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col justify-between">
+          <div className="flex items-center justify-between text-xs font-semibold text-gray-300 mb-2">
+            <div className="flex items-center gap-2">
+              <Volume2 className="w-4 h-4 text-purple-400" />
+              <span>Audio Track</span>
+            </div>
+            <span className="text-[10px] text-purple-300 font-mono">
+              {audioTracks.length} Track{audioTracks.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          <select
+            value={state.activeAudioTrack !== undefined ? String(state.activeAudioTrack) : (state.activeAudio || '0')}
+            onChange={(e) => onControl('SET_AUDIO', { trackId: e.target.value })}
+            disabled={loading || audioTracks.length === 0}
+            className="w-full bg-[#161924] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
+          >
+            {audioTracks.length > 0 ? (
+              audioTracks.map((track: any, idx: number) => (
+                <option key={track.id || idx} value={track.id !== undefined ? track.id : String(idx)}>
+                  🔊 {track.label || `Track ${idx + 1} (${track.language || 'Audio'})`}
+                </option>
+              ))
+            ) : (
+              <option value="0">🔊 Default Stereo Audio</option>
+            )}
+          </select>
+        </div>
+
+        {/* Card 3: Subtitle & Delay Timing Micro-Adjuster */}
         <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5">
           <div className="flex items-center justify-between text-xs font-semibold text-gray-300 mb-2">
             <div className="flex items-center gap-2">
@@ -206,7 +237,7 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
             value={state.activeSubtitle || 'Off'}
             onChange={(e) => onControl('SET_SUBTITLE', { language: e.target.value })}
             disabled={loading}
-            className="w-full bg-[#161924] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 mb-3"
+            className="w-full bg-[#161924] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 mb-2.5"
           >
             <option value="Off">Off (Disable Subtitles)</option>
             {(state.subtitles || []).map((sub: any, idx: number) => (

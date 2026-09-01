@@ -39,3 +39,15 @@ export interface SubtitleTrackInfo {
   streamIndex?: number;
   codec?: string;
 }
+
+export interface AudioTrackInfo {
+  id: string;
+  audioStreamIndex: number;
+  rawStreamIndex: number;
+  language: string;
+  label: string;
+  codec: string;
+  channels: number;
+  channelLayout: string;
+  title?: string;
+}

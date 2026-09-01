@@ -6,7 +6,9 @@ import {
   downloadSubtitleFile,
   probeEmbeddedSubtitles,
   extractEmbeddedSubtitle,
+  probeEmbeddedAudioTracks,
   SubtitleTrackInfo,
+  AudioTrackInfo,
 } from '@discord-stremio/metadata';
 import config from '@discord-stremio/config';
 
@@ -39,6 +41,7 @@ export class WorkerGuildSession {
   private streamBitrateKbps: number = 5000;
   private streamMaxBitrateKbps: number = 7000;
 
+  private activeAudioStreamIndex: number = 0;
   private activeAudio: string = 'Default Audio';
   private audioTracks: AudioTrack[] = [
     { id: '0', label: 'Default Stereo Audio', language: 'en', enabled: true },
@@ -105,9 +108,9 @@ export class WorkerGuildSession {
     const targetVc = options.voiceChannelId || this.voiceChannelId;
     if (targetVc) {
       const currentConnectedVc = (this.streamer as any).voiceConnection?.channelId;
-      const isAlreadyInChannel = currentConnectedVc === targetVc;
+      const isVoiceConnected = (this.streamer as any).voiceConnection && currentConnectedVc === targetVc;
 
-      if (!isAlreadyInChannel) {
+      if (!isVoiceConnected) {
         this.voiceChannelId = targetVc;
         try {
           console.log(`[WorkerSession:${this.guildId}] Connecting to voice channel ${this.voiceChannelId}...`);
@@ -120,20 +123,38 @@ export class WorkerGuildSession {
       } else {
         this.voiceChannelId = targetVc;
         this.isVoiceConnected = true;
-        console.log(`[WorkerSession:${this.guildId}] Already connected to voice channel ${targetVc}`);
+        console.log(`[WorkerSession:${this.guildId}] Active in voice channel ${targetVc}`);
       }
     }
 
-    // 1. Run embedded subtitle discovery, external subtitle fetching in parallel
-    const [rawExternalSubs, embeddedSubs, cdnUrl] = await Promise.all([
+    // 1. Run embedded subtitle discovery, embedded audio discovery, external subtitle fetching in parallel
+    const [rawExternalSubs, embeddedSubs, probedAudioTracks, cdnUrl] = await Promise.all([
       options.imdbId
         ? fetchAvailableSubtitles(options.imdbId, options.type || 'movie').catch(() => [] as SubtitleTrackInfo[])
         : Promise.resolve([] as SubtitleTrackInfo[]),
       probeEmbeddedSubtitles(options.streamUrl).catch(() => [] as SubtitleTrackInfo[]),
+      probeEmbeddedAudioTracks(options.streamUrl).catch(() => [] as AudioTrackInfo[]),
       this.resolveFinalStreamUrl(options.streamUrl),
     ]);
 
     this.resolvedCdnUrl = cdnUrl;
+
+    // Load multi-language Audio Tracks
+    if (probedAudioTracks && probedAudioTracks.length > 0) {
+      this.audioTracks = probedAudioTracks.map((a: AudioTrackInfo) => ({
+        id: String(a.audioStreamIndex),
+        label: a.label,
+        language: a.language,
+        enabled: a.audioStreamIndex === 0,
+      }));
+      this.activeAudioStreamIndex = 0;
+      this.activeAudio = this.audioTracks[0]?.label || 'Default Audio';
+      console.log(`[WorkerSession:${this.guildId}] Discovered ${this.audioTracks.length} audio tracks.`);
+    } else {
+      this.audioTracks = [{ id: '0', label: 'Default Stereo Audio', language: 'en', enabled: true }];
+      this.activeAudioStreamIndex = 0;
+      this.activeAudio = 'Default Stereo Audio';
+    }
 
     this.availableSubtitlesMap.clear();
     this.subtitles = [];
@@ -214,12 +235,18 @@ export class WorkerGuildSession {
       },
     });
 
-    console.log(`[WorkerSession:${this.guildId}] Starting stream segment (${this.qualityLabel}, Seek: ${seekSeconds}s, Subtitles: "${this.activeSubtitle}", Delay: ${this.subtitleDelaySeconds}s)...`);
+    console.log(
+      `[WorkerSession:${this.guildId}] Starting stream segment (${this.qualityLabel}, Audio: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}], Seek: ${seekSeconds}s, Subtitles: "${this.activeSubtitle}")...`
+    );
 
     const customInputOptions = seekSeconds > 0 ? ['-ss', String(seekSeconds)] : [];
 
-    // Custom audio filtering: dialogue matrix + volume boost
+    // Custom audio mapping + filtering: dialogue matrix + volume boost
     const customFfmpegFlags: string[] = [
+      '-map',
+      '0:v:0',
+      '-map',
+      `0:a:${this.activeAudioStreamIndex}?`,
       '-af',
       'volume=1.4,pan=stereo|c0=c2+0.6*c0+0.6*c4|c1=c2+0.6*c1+0.6*c5',
     ];
@@ -439,8 +466,37 @@ export class WorkerGuildSession {
   }
 
   async setAudio(trackId: string | number): Promise<boolean> {
-    this.activeAudio = String(trackId);
-    console.log(`[WorkerSession:${this.guildId}] Audio track set to: ${trackId}`);
+    const trackIdx = parseInt(String(trackId), 10);
+    if (!isNaN(trackIdx) && trackIdx >= 0) {
+      this.activeAudioStreamIndex = trackIdx;
+      const matchedTrack = this.audioTracks.find((t) => t.id === String(trackIdx));
+      this.activeAudio = matchedTrack?.label || `Audio Track #${trackIdx + 1}`;
+    } else {
+      // Search by label or language
+      const matchedTrack = this.audioTracks.find(
+        (t) =>
+          t.label.toLowerCase() === String(trackId).toLowerCase() ||
+          t.language.toLowerCase() === String(trackId).toLowerCase()
+      );
+      if (matchedTrack) {
+        this.activeAudioStreamIndex = parseInt(matchedTrack.id, 10) || 0;
+        this.activeAudio = matchedTrack.label;
+      } else {
+        this.activeAudio = String(trackId);
+      }
+    }
+
+    this.audioTracks.forEach((t) => {
+      t.enabled = t.id === String(this.activeAudioStreamIndex);
+    });
+
+    console.log(`[WorkerSession:${this.guildId}] Audio track switched to: "${this.activeAudio}" (Stream Index: 0:a:${this.activeAudioStreamIndex})`);
+
+    if (this.isStreaming) {
+      console.log(`[WorkerSession:${this.guildId}] Reloading stream with audio track ${this.activeAudioStreamIndex} at ${this.currentPosition}s...`);
+      await this.startStreamSegment(this.currentPosition);
+    }
+
     return true;
   }
 
@@ -450,51 +506,45 @@ export class WorkerGuildSession {
       const queueSize = await queueManager.size(this.guildId);
 
       if (queueSize > 0) {
-        console.log(`[WorkerSession:${this.guildId}] Movie ended. Entering 2-minute Intermission mode (${queueSize} items in queue)...`);
+        console.log(`[WorkerSession:${this.guildId}] Media finished. Starting 2-minute intermission break before next queue item (${queueSize} remaining)...`);
         this.playbackStatus = 'INTERMISSION';
         this.intermissionRemaining = 120; // 2 minutes
 
         if (this.intermissionTimer) clearInterval(this.intermissionTimer);
+
         this.intermissionTimer = setInterval(async () => {
           this.intermissionRemaining -= 1;
           if (this.intermissionRemaining <= 0) {
-            if (this.intermissionTimer) {
-              clearInterval(this.intermissionTimer);
-              this.intermissionTimer = null;
-            }
+            if (this.intermissionTimer) clearInterval(this.intermissionTimer);
+            this.intermissionTimer = null;
             await this.playNextInQueue();
           }
         }, 1000);
       } else {
+        console.log(`[WorkerSession:${this.guildId}] Queue is empty. Playback ended.`);
         this.playbackStatus = 'ENDED';
       }
     } catch (err) {
-      console.warn(`[WorkerSession:${this.guildId}] Intermission notice:`, (err as Error).message);
+      console.error(`[WorkerSession:${this.guildId}] Error handling media finished:`, err);
       this.playbackStatus = 'ENDED';
     }
   }
 
-  async playNextInQueue(): Promise<void> {
-    if (this.intermissionTimer) {
-      clearInterval(this.intermissionTimer);
-      this.intermissionTimer = null;
-    }
-    this.intermissionRemaining = 0;
-
+  private async playNextInQueue(): Promise<void> {
     try {
       const { queueManager } = await import('@discord-stremio/queue');
       const nextItem = await queueManager.dequeue(this.guildId);
-      if (nextItem && this.voiceChannelId) {
-        console.log(`[WorkerSession:${this.guildId}] Auto-playing next queued movie: "${nextItem.media.name}"...`);
+
+      if (nextItem && nextItem.stream && nextItem.stream.url) {
+        console.log(`[WorkerSession:${this.guildId}] Auto-playing next queue item: "${nextItem.media.name}"...`);
         await this.openMedia({
           streamUrl: nextItem.stream.url,
           title: nextItem.media.name,
           imdbId: nextItem.media.imdbId,
           type: nextItem.media.type || 'movie',
-          quality: nextItem.stream.quality || '1080p',
-          voiceChannelId: this.voiceChannelId,
+          quality: nextItem.stream.quality || this.currentQuality,
+          voiceChannelId: this.voiceChannelId || '',
           textChannelId: this.textChannelId || undefined,
-          initialTime: 0,
         });
       } else {
         this.playbackStatus = 'ENDED';
@@ -526,6 +576,7 @@ export class WorkerGuildSession {
       intermissionRemaining: this.intermissionRemaining,
       audioTracks: this.audioTracks,
       activeAudio: this.activeAudio,
+      activeAudioTrack: this.activeAudioStreamIndex,
       volume: 1,
       muted: false,
       fps: config.stream.fps,
