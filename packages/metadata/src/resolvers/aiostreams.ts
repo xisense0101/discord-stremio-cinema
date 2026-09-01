@@ -27,7 +27,7 @@ export class AIOStreamsResolver {
       
       const res = await fetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(15000),
       });
 
       if (res.ok) {
@@ -103,6 +103,8 @@ export class AIOStreamsResolver {
     }
 
     // Parse Language Score & Tag
+    const isKorean = /\b(korean|kor|gisaengchung|hangeul)\b/i.test(fullText) || bingeGroup.includes('Korean');
+    const isJapanese = /\b(japanese|jpn|anime|dual[- ]?audio)\b/i.test(fullText) || bingeGroup.includes('Japanese');
     const isMulti = /\b(multi|multisubs|dual[- ]?audio|ita[.-]eng|eng[.-]ita|fre[.-]eng|eng[.-]fre|hindi[.-]english|english[.-]hindi)\b/i.test(fullText);
     const isExplicitEnglish = /\b(english|eng|en)\b/i.test(fullText) || bingeGroup.includes('English');
     const isFrench = /\b(french|truefrench|vff|vf2|vfi|vof|vostfr|genemige)\b/i.test(fullText) || (bingeGroup.includes('French') && !bingeGroup.includes('English'));
@@ -116,7 +118,13 @@ export class AIOStreamsResolver {
     let languageLabel = 'English (Original)';
     let languageScore = 100;
 
-    if (isMulti || (isExplicitEnglish && (isFrench || isItalian || isSpanish || isGerman || isRussian || isHindi))) {
+    if (isKorean) {
+      languageLabel = isMulti || isExplicitEnglish ? 'Korean (Original / Multi)' : 'Korean (Original)';
+      languageScore = 100;
+    } else if (isJapanese) {
+      languageLabel = isMulti || isExplicitEnglish ? 'Japanese (Original / Multi)' : 'Japanese (Original)';
+      languageScore = 100;
+    } else if (isMulti || (isExplicitEnglish && (isFrench || isItalian || isSpanish || isGerman || isRussian || isHindi))) {
       languageLabel = 'Multi-Audio (ENG+)';
       languageScore = 90;
     } else if (isFrench) {

@@ -167,11 +167,18 @@ export class WorkerGuildSession {
         enabled: false,
       }));
 
-      // Find first English track, or fallback to Track 0
-      const englishIndex = this.audioTracks.findIndex(
-        (t) => t.language.toLowerCase().includes('english') || t.label.toLowerCase().includes('english')
-      );
-      this.activeAudioStreamIndex = englishIndex >= 0 ? englishIndex : 0;
+      // Default to Track 0 (Original Audio / Main Dialogue in container) unless Track 0 is a commentary track
+      let defaultTrackIndex = 0;
+      const isCommentary = (label: string) => {
+        const l = label.toLowerCase();
+        return l.includes('commentary') || l.includes('description') || l.includes('director');
+      };
+      if (isCommentary(this.audioTracks[0]?.label || '')) {
+        const nonCommentary = this.audioTracks.findIndex((t) => !isCommentary(t.label));
+        if (nonCommentary >= 0) defaultTrackIndex = nonCommentary;
+      }
+
+      this.activeAudioStreamIndex = defaultTrackIndex;
       this.audioTracks[this.activeAudioStreamIndex].enabled = true;
       this.activeAudio = this.audioTracks[this.activeAudioStreamIndex]?.label || 'Default Audio';
       console.log(`[WorkerSession:${this.guildId}] Discovered ${this.audioTracks.length} audio tracks. Active: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}]`);
