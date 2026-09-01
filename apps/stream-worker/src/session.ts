@@ -140,7 +140,7 @@ export class WorkerGuildSession {
     let streamUrlToUse = options.streamUrl;
     if (options.imdbId) {
       try {
-        console.log(`[WorkerSession:${this.guildId}] Resolving fresh stream URL from Worker IP for ${options.type || 'movie'} ${options.imdbId}...`);
+        console.log(`[WorkerSession:${this.guildId}] Resolving verified working stream from Worker IP for ${options.type || 'movie'} ${options.imdbId}...`);
         const { resolveMediaStreams } = await import('@discord-stremio/metadata');
         const streams = await resolveMediaStreams(
           options.type || 'movie',
@@ -150,8 +150,32 @@ export class WorkerGuildSession {
           options.quality || '720p'
         );
         if (streams && streams.length > 0) {
-          streamUrlToUse = streams[0].url;
-          console.log(`[WorkerSession:${this.guildId}] Worker IP stream resolved: "${streams[0].title}" (${streams[0].quality})`);
+          // Probe top candidate streams to find the first 100% playable direct CDN stream that is not a slate
+          let foundWorking = false;
+          for (const cand of streams.slice(0, 10)) {
+            try {
+              const res = await fetch(cand.url, {
+                method: 'HEAD',
+                redirect: 'follow',
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (res.url && !res.url.includes('slate.elfhosted.com') && res.status < 400) {
+                streamUrlToUse = res.url;
+                this.currentTitle = options.title || cand.title;
+                console.log(`[WorkerSession:${this.guildId}] Confirmed playable CDN stream: "${cand.title}" -> ${res.url.split('?')[0]}`);
+                foundWorking = true;
+                break;
+              } else {
+                console.warn(`[WorkerSession:${this.guildId}] Candidate "${cand.title}" returned slate video or error (${res.status}). Checking next...`);
+              }
+            } catch {
+              // try next candidate
+            }
+          }
+          if (!foundWorking && streams[0]?.url) {
+            streamUrlToUse = streams[0].url;
+          }
         }
       } catch (err) {
         console.warn(`[WorkerSession:${this.guildId}] Worker IP stream resolution notice:`, (err as Error).message);
