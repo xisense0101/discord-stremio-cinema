@@ -2,8 +2,9 @@ import { z } from 'zod';
 import dotenv from 'dotenv';
 import path from 'path';
 
-// Load .env file from root
+// Load .env file from all potential monorepo locations
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
 
 const ConfigSchema = z.object({
@@ -11,9 +12,9 @@ const ConfigSchema = z.object({
   DISCORD_CLIENT_ID: z.string().optional().default(''),
   DISCORD_STREAMER_TOKEN: z.string().min(1, 'DISCORD_STREAMER_TOKEN is required'),
 
-  TORBOX_API_KEY: z.string().optional().default(''),
-  RESOLVER_MODE: z.enum(['torbox-direct', 'aiostreams']).default('torbox-direct'),
-  AIOSTREAMS_URL: z.string().optional().default('http://localhost:3000'),
+  TORBOX_API_KEY: z.string().optional().default('6eb85715-b543-41c3-ba65-25d0af51edd8'),
+  RESOLVER_MODE: z.enum(['torbox-direct', 'aiostreams']).default('aiostreams'),
+  AIOSTREAMS_URL: z.string().default('https://aiostreams.elfhosted.com/stremio/7ed277cb-23c5-47c7-bed8-422e3095a99f/eyJpIjoicndwc3NHYXF6RFZ3b0YzUXpZY0JEQT09IiwiZSI6ImRiZVpDK21TeHgwVTBjV0REYk5CRmt5cVFkVzBrOWhObGNCNHZhYXBtVHM9IiwidCI6ImEifQ/manifest.json'),
 
   REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
   DATABASE_URL: z.string().default('sqlite://./data/stremio_player.db'),
