@@ -23,6 +23,7 @@ export class WorkerGuildSession {
   private currentStreamUrl: string = '';
   private resolvedCdnUrl: string = '';
   private currentPosition: number = 0;
+  private currentImdbId?: string;
   private duration: number = 7200;
   private playbackStatus: 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ENDED' | 'ERROR' | 'INTERMISSION' = 'IDLE';
   private intermissionRemaining: number = 0;
@@ -92,7 +93,15 @@ export class WorkerGuildSession {
         });
 
         if (res.url && res.url.includes('slate.elfhosted.com')) {
-          console.warn(`[WorkerSession:${this.guildId}] Detected ElfHosted Slate IP-lock redirect: ${res.url.substring(0, 80)}...`);
+          console.warn(`[WorkerSession:${this.guildId}] Detected ElfHosted Slate IP-lock redirect (${res.url.substring(0, 80)}...). Fallback to direct resolution...`);
+          if (this.currentImdbId) {
+            const { torboxResolver } = await import('@discord-stremio/metadata');
+            const directStreams = await torboxResolver.resolveStreams('movie', this.currentImdbId, undefined, undefined, '720p');
+            if (directStreams && directStreams.length > 0 && directStreams[0].url) {
+              console.log(`[WorkerSession:${this.guildId}] Slate bypassed: Using direct stream "${directStreams[0].title}"`);
+              return directStreams[0].url;
+            }
+          }
         } else if (res.url && res.url.startsWith('http')) {
           console.log(`[WorkerSession:${this.guildId}] Resolved CDN endpoint: ${res.url.split('?')[0]}`);
           return res.url;
@@ -119,6 +128,7 @@ export class WorkerGuildSession {
     this.voiceChannelId = options.voiceChannelId;
     this.textChannelId = options.textChannelId || null;
     this.currentTitle = options.title;
+    this.currentImdbId = options.imdbId;
     this.currentPosition = options.initialTime || 0;
     this.subtitleDelaySeconds = 0;
     this.playbackStatus = 'BUFFERING';
@@ -128,7 +138,7 @@ export class WorkerGuildSession {
 
     // Ensure playback URL is always resolved from Worker IP to avoid ElfHosted IP-lock mismatches
     let streamUrlToUse = options.streamUrl;
-    if (options.imdbId && (!streamUrlToUse || streamUrlToUse.includes('elfhosted.com') || streamUrlToUse.includes('aiostreams'))) {
+    if (options.imdbId) {
       try {
         console.log(`[WorkerSession:${this.guildId}] Resolving fresh stream URL from Worker IP for ${options.type || 'movie'} ${options.imdbId}...`);
         const { resolveMediaStreams } = await import('@discord-stremio/metadata');
