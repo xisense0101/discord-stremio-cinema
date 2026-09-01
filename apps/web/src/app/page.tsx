@@ -9,6 +9,7 @@ import { SmartRandomModal } from '@/components/SmartRandomModal';
 import { VoiceSettingsPanel } from '@/components/VoiceSettingsPanel';
 import { SettingsModal } from '@/components/SettingsModal';
 import { IntermissionBanner } from '@/components/IntermissionBanner';
+import { StreamsModal, StreamItem } from '@/components/StreamsModal';
 import { Tv, Headphones, Settings, Sparkles, AlertTriangle, Key, Radio, Volume2 } from 'lucide-react';
 
 export default function CinemaDashboard() {
@@ -17,10 +18,11 @@ export default function CinemaDashboard() {
   const [queueItems, setQueueItems] = useState<any[]>([]);
   const [tokenHealth, setTokenHealth] = useState<any>(null);
   const [workerConnected, setWorkerConnected] = useState<boolean>(true);
-  const [defaultQuality, setDefaultQuality] = useState<string>('1080p');
+  const [defaultQuality, setDefaultQuality] = useState<string>('720p');
   const [activeVoiceInfo, setActiveVoiceInfo] = useState<{ guildId?: string; vcId?: string; vcName?: string; guildName?: string }>({});
   const [isRandomModalOpen, setIsRandomModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [selectedStreamsMedia, setSelectedStreamsMedia] = useState<any | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
   // Fetch live state & token health & settings
@@ -93,7 +95,7 @@ export default function CinemaDashboard() {
   const handlePlayMedia = async (mediaItem: any, qualityOverride?: string) => {
     setLoading(true);
     try {
-      const targetQuality = qualityOverride || defaultQuality || '1080p';
+      const targetQuality = qualityOverride || defaultQuality || '720p';
       const res = await fetch('/api/player/play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,10 +118,37 @@ export default function CinemaDashboard() {
     }
   };
 
+  // Play a specific chosen torrent stream
+  const handlePlayStream = async (mediaItem: any, stream: StreamItem, targetQuality: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/player/play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mediaItem,
+          stream,
+          quality: targetQuality || defaultQuality || '720p',
+          guildId: activeVoiceInfo.guildId,
+          voiceChannelId: activeVoiceInfo.vcId,
+        }),
+      });
+      const data = await res.json();
+      if (data.state) {
+        setPlayerState(data.state);
+      }
+    } catch (err) {
+      console.error('Play stream error:', err);
+    } finally {
+      setLoading(false);
+      fetchState();
+    }
+  };
+
   // Add a movie to queue using active defaultQuality
   const handleQueueMedia = async (mediaItem: any, qualityOverride?: string) => {
     try {
-      const targetQuality = qualityOverride || defaultQuality || '1080p';
+      const targetQuality = qualityOverride || defaultQuality || '720p';
       await fetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -132,6 +161,25 @@ export default function CinemaDashboard() {
       fetchState();
     } catch (err) {
       console.error('Queue error:', err);
+    }
+  };
+
+  // Add a specific chosen torrent stream to queue
+  const handleQueueStream = async (mediaItem: any, stream: StreamItem, targetQuality: string) => {
+    try {
+      await fetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mediaItem,
+          stream,
+          quality: targetQuality || defaultQuality || '720p',
+          guildId: activeVoiceInfo.guildId,
+        }),
+      });
+      fetchState();
+    } catch (err) {
+      console.error('Queue stream error:', err);
     }
   };
 
@@ -359,6 +407,7 @@ export default function CinemaDashboard() {
             <ExploreView
               onPlay={(item) => handlePlayMedia(item)}
               onQueue={(item) => handleQueueMedia(item)}
+              onSelectStreams={(item) => setSelectedStreamsMedia(item)}
               loading={loading}
             />
           </div>
@@ -382,6 +431,16 @@ export default function CinemaDashboard() {
           </div>
         )}
       </main>
+
+      {/* TorBox Debrid Torrent Stream Selection Modal */}
+      <StreamsModal
+        isOpen={!!selectedStreamsMedia}
+        onClose={() => setSelectedStreamsMedia(null)}
+        media={selectedStreamsMedia}
+        onPlayStream={handlePlayStream}
+        onQueueStream={handleQueueStream}
+        defaultQuality={defaultQuality}
+      />
 
       {/* Smart Random Movie Modal ("Cinema Marathon Mode") */}
       <SmartRandomModal

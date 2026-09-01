@@ -27,15 +27,17 @@ export async function POST(req: NextRequest) {
 
     console.log(`[API:Play] Playing "${mediaItem.name}" to Guild: ${guildId}, VoiceChannel: ${voiceChannelId} (Target Quality: ${targetQuality})`);
 
-    // Resolve optimal stream matching target quality
-    const streams = await resolveMediaStreams(mediaItem.type || 'movie', mediaItem.imdbId, undefined, undefined, targetQuality);
-    if (!streams || streams.length === 0) {
-      return NextResponse.json({ success: false, error: 'No cached TorBox stream found for this title' }, { status: 404 });
+    // Use explicitly passed stream or resolve optimal stream
+    let selectedStream = body.stream;
+    if (!selectedStream) {
+      const streams = await resolveMediaStreams(mediaItem.type || 'movie', mediaItem.imdbId, body.season, body.episode, targetQuality);
+      if (!streams || streams.length === 0) {
+        return NextResponse.json({ success: false, error: 'No cached TorBox stream found for this title' }, { status: 404 });
+      }
+      selectedStream = streams[0];
     }
 
-    const selectedStream = streams[0];
-
-    // Open media in worker session with the resolved target quality
+    // Open media in worker session with the requested targetQuality
     const res = await sendWorkerCommand(
       'OPEN_MEDIA',
       {
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
         title: mediaItem.name,
         imdbId: mediaItem.imdbId,
         type: mediaItem.type || 'movie',
-        quality: selectedStream.quality || targetQuality,
+        quality: targetQuality, // Strictly use requested output resolution (e.g. 720p)
         voiceChannelId,
         initialTime,
       },

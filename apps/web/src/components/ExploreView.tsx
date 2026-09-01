@@ -6,10 +6,11 @@ import { Search, Play, Plus, Film, Star, Sparkles, Check, Loader2 } from 'lucide
 interface ExploreViewProps {
   onPlay: (media: any) => Promise<void>;
   onQueue: (media: any) => Promise<void>;
+  onSelectStreams?: (media: any) => void;
   loading: boolean;
 }
 
-export const ExploreView: React.FC<ExploreViewProps> = ({ onPlay, onQueue, loading }) => {
+export const ExploreView: React.FC<ExploreViewProps> = ({ onPlay, onQueue, onSelectStreams, loading }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
@@ -85,7 +86,11 @@ export const ExploreView: React.FC<ExploreViewProps> = ({ onPlay, onQueue, loadi
                 className="group rounded-xl overflow-hidden bg-white/[0.02] hover:bg-white/[0.05] border border-white/5 transition-all flex flex-col justify-between"
               >
                 {/* Poster Image */}
-                <div className="aspect-[2/3] relative overflow-hidden bg-[#161924]">
+                <div
+                  onClick={() => onSelectStreams ? onSelectStreams(item) : onPlay(item)}
+                  className="aspect-[2/3] relative overflow-hidden bg-[#161924] cursor-pointer"
+                  title="Click to view all Debrid cached torrent sources"
+                >
                   {item.poster ? (
                     <img
                       src={item.poster}
@@ -115,35 +120,52 @@ export const ExploreView: React.FC<ExploreViewProps> = ({ onPlay, onQueue, loadi
                 </div>
 
                 {/* Info & Action Buttons */}
-                <div className="p-3">
-                  <h4 className="font-bold text-xs text-white truncate mb-2" title={item.name}>
+                <div className="p-3 flex flex-col justify-between flex-1">
+                  <h4
+                    onClick={() => onSelectStreams ? onSelectStreams(item) : onPlay(item)}
+                    className="font-bold text-xs text-white truncate mb-2 cursor-pointer hover:text-indigo-300 transition-colors"
+                    title={item.name}
+                  >
                     {item.name}
                   </h4>
 
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      onClick={() => onPlay(item)}
-                      disabled={loading}
-                      className="py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] flex items-center justify-center gap-1 active:scale-95 transition-all"
-                      title="Play Immediately"
-                    >
-                      <Play className="w-3 h-3 fill-current" />
-                      Play
-                    </button>
+                  <div className="space-y-1.5">
+                    {onSelectStreams && (
+                      <button
+                        onClick={() => onSelectStreams(item)}
+                        className="w-full py-1 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-indigo-300 font-semibold text-[10px] flex items-center justify-center gap-1 transition-all"
+                        title="Browse and select specific torrent / quality"
+                      >
+                        <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
+                        Choose Source
+                      </button>
+                    )}
 
-                    <button
-                      onClick={() => handleQueueClick(item)}
-                      disabled={loading}
-                      className={`py-1.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center gap-1 active:scale-95 transition-all ${
-                        isSuccess
-                          ? 'bg-emerald-600/30 border-emerald-500/50 text-emerald-300'
-                          : 'bg-white/5 hover:bg-white/10 border-white/10 text-gray-300'
-                      }`}
-                      title="Add to Queue"
-                    >
-                      {isSuccess ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
-                      {isSuccess ? 'Queued' : 'Queue'}
-                    </button>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        onClick={() => onPlay(item)}
+                        disabled={loading}
+                        className="py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] flex items-center justify-center gap-1 active:scale-95 transition-all"
+                        title="Play Recommended Source Immediately"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        Play
+                      </button>
+
+                      <button
+                        onClick={() => handleQueueClick(item)}
+                        disabled={loading}
+                        className={`py-1.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center gap-1 active:scale-95 transition-all ${
+                          isSuccess
+                            ? 'bg-emerald-600/30 border-emerald-500/50 text-emerald-300'
+                            : 'bg-white/5 hover:bg-white/10 border-white/10 text-gray-300'
+                        }`}
+                        title="Add to Queue"
+                      >
+                        {isSuccess ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+                        {isSuccess ? 'Queued' : 'Queue'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

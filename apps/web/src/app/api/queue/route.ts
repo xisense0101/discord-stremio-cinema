@@ -14,6 +14,7 @@ export async function POST(req: NextRequest) {
   try {
     const {
       mediaItem,
+      stream,
       quality,
       requestedBy = 'senzu (Web)',
       guildId = DEFAULT_GUILD_ID,
@@ -25,18 +26,22 @@ export async function POST(req: NextRequest) {
     }
 
     const settings = getStoredSettings();
-    const targetQuality = quality || settings.defaultQuality || '1080p';
+    const targetQuality = quality || settings.defaultQuality || '720p';
 
-    const streams = await resolveMediaStreams(mediaItem.type || 'movie', mediaItem.imdbId, undefined, undefined, targetQuality);
-    if (!streams || streams.length === 0) {
-      return NextResponse.json({ success: false, error: 'No cached TorBox stream found' }, { status: 404 });
+    let selectedStream = stream;
+    if (!selectedStream) {
+      const streams = await resolveMediaStreams(mediaItem.type || 'movie', mediaItem.imdbId, undefined, undefined, targetQuality);
+      if (!streams || streams.length === 0) {
+        return NextResponse.json({ success: false, error: 'No cached TorBox stream found' }, { status: 404 });
+      }
+      selectedStream = streams[0];
     }
 
     const queueItem: QueueItem = {
       id: `queue_${Date.now()}_${Math.random().toString(36).substring(7)}`,
       guildId,
       media: mediaItem,
-      stream: streams[0],
+      stream: selectedStream,
       requestedBy,
       addedAt: Date.now(),
     };
