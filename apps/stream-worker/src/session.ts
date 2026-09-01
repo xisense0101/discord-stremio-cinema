@@ -62,21 +62,39 @@ export class WorkerGuildSession {
   }
 
   /**
-   * Follow HTTP 302/307 redirects to get direct TorBox CDN endpoint
+   * Follow HTTP 302/307 redirects or query TorBox API directly for direct video CDN endpoint
    */
   private async resolveFinalStreamUrl(rawUrl: string): Promise<string> {
     try {
-      console.log(`[WorkerSession:${this.guildId}] Resolving stream URL redirect chain...`);
-      const res = await fetch(rawUrl, {
-        method: 'HEAD',
-        redirect: 'follow',
-        headers: { 'User-Agent': 'DiscordStremioPlayer/1.0' },
-        signal: AbortSignal.timeout(8000),
-      });
+      // 1. If it is a TorBox torrentio redirect URL or magnet link or raw infoHash, resolve via direct TorBox CDN
+      const magnetMatch = rawUrl.match(/btih:([a-fA-F0-9]{40})/i) || rawUrl.match(/\/([a-fA-F0-9]{40})/);
+      if (magnetMatch || rawUrl.includes('torrentio.strem.fun/resolve/torbox/')) {
+        const infoHash = magnetMatch ? magnetMatch[1] : rawUrl.split('/').find((p) => /^[a-fA-F0-9]{40}$/i.test(p));
+        if (infoHash) {
+          console.log(`[WorkerSession:${this.guildId}] Resolving direct TorBox CDN link for infoHash: ${infoHash}...`);
+          const { torboxResolver } = await import('@discord-stremio/metadata');
+          const directStream = await torboxResolver.resolveDirectTorboxStream(infoHash);
+          if (directStream && directStream.url && directStream.url.startsWith('http')) {
+            console.log(`[WorkerSession:${this.guildId}] Successfully resolved direct TorBox video CDN: ${directStream.url.split('?')[0]}`);
+            return directStream.url;
+          }
+        }
+      }
 
-      if (res.url && res.url.startsWith('http')) {
-        console.log(`[WorkerSession:${this.guildId}] Resolved CDN endpoint: ${res.url.split('?')[0]}`);
-        return res.url;
+      // 2. Standard HTTP redirect resolution with browser user-agent
+      if (rawUrl.startsWith('http')) {
+        console.log(`[WorkerSession:${this.guildId}] Resolving stream URL redirect chain...`);
+        const res = await fetch(rawUrl, {
+          method: 'HEAD',
+          redirect: 'follow',
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          signal: AbortSignal.timeout(8000),
+        });
+
+        if (res.url && res.url.startsWith('http')) {
+          console.log(`[WorkerSession:${this.guildId}] Resolved CDN endpoint: ${res.url.split('?')[0]}`);
+          return res.url;
+        }
       }
     } catch (err) {
       console.warn(`[WorkerSession:${this.guildId}] Direct URL resolution notice:`, (err as Error).message);
@@ -295,15 +313,26 @@ export class WorkerGuildSession {
       }
     }, 1000);
 
+    const streamStartTime = Date.now();
+
     command.on('error', (err: any) => {
-      if (this.playbackStatus === 'PLAYING') {
-        console.warn(`[WorkerSession:${this.guildId}] FFmpeg notice:`, err.message);
+      console.warn(`[WorkerSession:${this.guildId}] FFmpeg notice:`, err.message);
+      if (this.activeFfmpegCommand === command) {
+        this.playbackStatus = 'ERROR';
       }
     });
 
     command.on('end', () => {
-      console.log(`[WorkerSession:${this.guildId}] Segment completed.`);
-      this.handleMediaFinished();
+      if (this.activeFfmpegCommand !== command) return;
+      const elapsedSeconds = (Date.now() - streamStartTime) / 1000;
+      console.log(`[WorkerSession:${this.guildId}] Stream segment ended (runtime: ${elapsedSeconds.toFixed(1)}s).`);
+      // Only trigger media finished if stream ran for substantial duration or reached end
+      if (elapsedSeconds > 15 || this.currentPosition > 30) {
+        this.handleMediaFinished();
+      } else {
+        console.warn(`[WorkerSession:${this.guildId}] Early stream termination detected. Retaining voice connection.`);
+        this.playbackStatus = 'IDLE';
+      }
     });
 
     playStream(output, this.streamer, {

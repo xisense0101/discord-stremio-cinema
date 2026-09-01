@@ -2,11 +2,99 @@ import fetch from 'node-fetch';
 import { MediaStream } from '../types.js';
 import config from '@discord-stremio/config';
 
+const FALLBACK_TORBOX_API_KEY = '6eb85715-b543-41c3-ba65-25d0af51edd8';
+
 export class TorBoxStreamResolver {
   private apiKey: string;
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || config.torbox.apiKey;
+    this.apiKey = apiKey || config.torbox.apiKey || FALLBACK_TORBOX_API_KEY;
+  }
+
+  private getEffectiveApiKey(): string {
+    return process.env.TORBOX_API_KEY || this.apiKey || config.torbox.apiKey || FALLBACK_TORBOX_API_KEY;
+  }
+
+  /**
+   * Request direct CDN download/stream URL for a specific torrent hash from TorBox API
+   */
+  async resolveDirectTorboxStream(infoHash: string, fileIdx?: number): Promise<{ url: string; fileName?: string; sizeBytes?: number } | null> {
+    const key = this.getEffectiveApiKey();
+    if (!key || !infoHash) return null;
+
+    try {
+      const form = new URLSearchParams();
+      form.append('magnet', infoHash.startsWith('magnet:') ? infoHash : `magnet:?xt=urn:btih:${infoHash}`);
+
+      const createRes = await fetch('https://api.torbox.app/v1/api/torrents/createtorrent', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}` },
+        body: form,
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!createRes.ok) return null;
+      const createData = (await createRes.json()) as any;
+      const torrentId = createData.data?.torrent_id || createData.data?.id;
+      if (!torrentId) return null;
+
+      // Fetch torrent file list to pick the largest video file (not .txt or sample)
+      let selectedFileId: number | undefined = fileIdx;
+      let selectedFileName: string | undefined;
+      let selectedFileSize: number | undefined;
+
+      if (selectedFileId === undefined) {
+        const listRes = await fetch(`https://api.torbox.app/v1/api/torrents/mylist?id=${torrentId}`, {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(8000),
+        });
+
+        if (listRes.ok) {
+          const listData = (await listRes.json()) as any;
+          const files: any[] = listData.data?.files || [];
+          if (Array.isArray(files) && files.length > 0) {
+            // Find largest file with video extension / mimetype
+            const videoFiles = files.filter((f) => {
+              const name = (f.name || f.short_name || '').toLowerCase();
+              const mime = (f.mimetype || '').toLowerCase();
+              return (
+                mime.startsWith('video/') ||
+                name.endsWith('.mkv') ||
+                name.endsWith('.mp4') ||
+                name.endsWith('.avi') ||
+                name.endsWith('.mov') ||
+                name.endsWith('.webm') ||
+                name.endsWith('.m4v')
+              );
+            });
+
+            const candidates = videoFiles.length > 0 ? videoFiles : files;
+            candidates.sort((a, b) => (b.size || 0) - (a.size || 0));
+            selectedFileId = candidates[0].id;
+            selectedFileName = candidates[0].short_name || candidates[0].name;
+            selectedFileSize = candidates[0].size;
+          }
+        }
+      }
+
+      const fileParam = selectedFileId !== undefined ? `&file_id=${selectedFileId}` : '';
+      const dlRes = await fetch(`https://api.torbox.app/v1/api/torrents/requestdl?token=${key}&torrent_id=${torrentId}${fileParam}&zip=false`, {
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!dlRes.ok) return null;
+      const dlData = (await dlRes.json()) as any;
+      if (typeof dlData.data === 'string' && dlData.data.startsWith('http')) {
+        return {
+          url: dlData.data,
+          fileName: selectedFileName,
+          sizeBytes: selectedFileSize,
+        };
+      }
+    } catch (err) {
+      console.warn('[TorBoxDirect] Error resolving direct stream:', (err as Error).message);
+    }
+    return null;
   }
 
   /**
@@ -21,18 +109,17 @@ export class TorBoxStreamResolver {
   ): Promise<MediaStream[]> {
     const id = type === 'series' && season && episode ? `${imdbId}:${season}:${episode}` : imdbId;
     const streams: MediaStream[] = [];
+    const key = this.getEffectiveApiKey();
 
     // 1. Primary: Torrentio with TorBox Debrid configured
-    const torrentioBase = this.apiKey
-      ? `https://torrentio.strem.fun/torbox=${this.apiKey}`
-      : 'https://torrentio.strem.fun';
+    const torrentioBase = key ? `https://torrentio.strem.fun/torbox=${key}` : 'https://torrentio.strem.fun';
 
     try {
       const url = `${torrentioBase}/stream/${type}/${id}.json`;
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'DiscordStremioPlayer/1.0' },
-        timeout: 8000,
-      } as any);
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(8000),
+      });
 
       if (res.ok) {
         const data = (await res.json()) as { streams?: any[] };
@@ -48,7 +135,19 @@ export class TorBoxStreamResolver {
     }
 
     // Sort streams: cached first with preferred quality and supported audio, filter out CAM/TS
-    return this.rankStreams(streams, preferredQuality);
+    const ranked = this.rankStreams(streams, preferredQuality);
+
+    // If top streams only have Torrentio resolve URLs or infoHashes, preemptively resolve the direct TorBox CDN URL for the top cached stream
+    if (ranked.length > 0 && ranked[0].infoHash) {
+      try {
+        const directCdn = await this.resolveDirectTorboxStream(ranked[0].infoHash, ranked[0].fileIdx);
+        if (directCdn && directCdn.url) {
+          ranked[0].url = directCdn.url;
+        }
+      } catch {}
+    }
+
+    return ranked;
   }
 
   private parseStreamDescriptor(raw: any, provider: string): MediaStream | null {
