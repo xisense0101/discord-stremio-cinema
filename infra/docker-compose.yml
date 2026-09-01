@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: stremio_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  controller:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.controller
+    container_name: stremio_controller
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+    ports:
+      - "4000:4000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  stream-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.worker
+    container_name: stremio_stream_worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+      - PUPPETEER_HEADLESS=true
+    ports:
+      - "4001:4001"
+    volumes:
+      - ../data/chromium-profiles:/app/data/chromium-profiles
+    ipc: host
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:

@@ -1,0 +1,19 @@
+{
+  "name": "@discord-stremio/metadata",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "@discord-stremio/config": "workspace:*",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node-fetch": "^2.6.12",
+    "typescript": "^5.7.3"
+  }
+}

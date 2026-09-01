@@ -1,0 +1,19 @@
+{
+  "name": "@discord-stremio/sessions",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "@discord-stremio/config": "workspace:*",
+    "ioredis": "^5.4.2"
+  },
+  "devDependencies": {
+    "@types/ioredis": "^5.0.0",
+    "typescript": "^5.7.3"
+  }
+}

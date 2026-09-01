@@ -1,0 +1,40 @@
+{
+  "name": "discord-stremio-player",
+  "version": "1.0.0",
+  "description": "Production-grade Discord Movie & TV streaming platform using Stremio, Puppeteer and Discord Go-Live transport",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:packages": "pnpm -r --filter './packages/*' run build",
+    "build:apps": "pnpm -r --filter './apps/*' run build",
+    "build": "pnpm build:packages && pnpm build:apps",
+    "start:controller": "pnpm --filter @discord-stremio/controller start",
+    "start:worker": "pnpm --filter @discord-stremio/stream-worker start",
+    "start:web": "pnpm --filter @discord-stremio/web start",
+    "dev:controller": "pnpm --filter @discord-stremio/controller dev",
+    "dev:worker": "pnpm --filter @discord-stremio/stream-worker dev",
+    "dev:web": "pnpm --filter @discord-stremio/web dev",
+    "build:web": "pnpm --filter @discord-stremio/web build",
+    "test": "npx tsx scripts/benchmark-suite.ts",
+    "smoke-test": "bash scripts/smoke-test.sh",
+    "diagnose": "bash scripts/diagnose.sh"
+  },
+  "dependencies": {
+    "@discord-stremio/config": "workspace:*",
+    "@discord-stremio/diagnostics": "workspace:*",
+    "@discord-stremio/discord-controller": "workspace:*",
+    "@discord-stremio/metadata": "workspace:*",
+    "@discord-stremio/playback": "workspace:*",
+    "@discord-stremio/queue": "workspace:*",
+    "@discord-stremio/sessions": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Production Builds & Transpilation Outputs
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment Variables & Secrets
+.env
+.env*.local
+!.env.example
+
+# Runtime Data, Logs & Databases
+data/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+sqlite.db*
+*.db
+
+# Temporary Media & Subtitle Cache
+*.srt
+*.vtt
+*.ass
+/tmp/
+scratch_*.ts
+
+# Operating System & IDE Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+coverage/

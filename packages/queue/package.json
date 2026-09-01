@@ -1,0 +1,20 @@
+{
+  "name": "@discord-stremio/queue",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "@discord-stremio/config": "workspace:*",
+    "@discord-stremio/metadata": "workspace:*",
+    "@discord-stremio/sessions": "workspace:*",
+    "ioredis": "^5.4.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@discord-stremio/playback",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "@discord-stremio/config": "workspace:*",
+    "puppeteer-core": "^24.16.2",
+    "puppeteer-stream": "3.0.23"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

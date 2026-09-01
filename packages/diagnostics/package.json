@@ -1,0 +1,21 @@
+{
+  "name": "@discord-stremio/diagnostics",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "@discord-stremio/config": "workspace:*",
+    "@discord-stremio/metadata": "workspace:*",
+    "@discord-stremio/playback": "workspace:*",
+    "@discord-stremio/sessions": "workspace:*",
+    "discord.js": "^14.17.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

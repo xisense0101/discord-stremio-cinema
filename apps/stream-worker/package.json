@@ -1,0 +1,26 @@
+{
+  "name": "@discord-stremio/stream-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@dank074/discord-video-stream": "6.0.0",
+    "@discord-stremio/config": "workspace:*",
+    "@discord-stremio/diagnostics": "workspace:*",
+    "@discord-stremio/playback": "workspace:*",
+    "@discord-stremio/sessions": "workspace:*",
+    "discord.js-selfbot-v13": "3.7.1",
+    "ioredis": "^5.4.2",
+    "puppeteer-core": "^24.16.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}
