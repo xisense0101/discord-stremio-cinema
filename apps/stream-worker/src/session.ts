@@ -145,33 +145,40 @@ export class WorkerGuildSession {
       }
     }
 
-    // 1. Run embedded subtitle discovery, embedded audio discovery, external subtitle fetching in parallel
-    const [rawExternalSubs, embeddedSubs, probedAudioTracks, cdnUrl] = await Promise.all([
+    // 1. Resolve direct CDN URL first to give ffprobe instant zero-latency access
+    this.resolvedCdnUrl = await this.resolveFinalStreamUrl(options.streamUrl);
+    const probeTargetUrl = this.resolvedCdnUrl || options.streamUrl;
+
+    // 2. Run embedded subtitle discovery, embedded audio discovery, external subtitle fetching in parallel
+    const [rawExternalSubs, embeddedSubs, probedAudioTracks] = await Promise.all([
       options.imdbId
         ? fetchAvailableSubtitles(options.imdbId, options.type || 'movie').catch(() => [] as SubtitleTrackInfo[])
         : Promise.resolve([] as SubtitleTrackInfo[]),
-      probeEmbeddedSubtitles(options.streamUrl).catch(() => [] as SubtitleTrackInfo[]),
-      probeEmbeddedAudioTracks(options.streamUrl).catch(() => [] as AudioTrackInfo[]),
-      this.resolveFinalStreamUrl(options.streamUrl),
+      probeEmbeddedSubtitles(probeTargetUrl).catch(() => [] as SubtitleTrackInfo[]),
+      probeEmbeddedAudioTracks(probeTargetUrl, 5000).catch(() => [] as AudioTrackInfo[]),
     ]);
 
-    this.resolvedCdnUrl = cdnUrl;
-
-    // Load multi-language Audio Tracks
+    // Load multi-language Audio Tracks & auto-select English
     if (probedAudioTracks && probedAudioTracks.length > 0) {
       this.audioTracks = probedAudioTracks.map((a: AudioTrackInfo) => ({
         id: String(a.audioStreamIndex),
         label: a.label,
         language: a.language,
-        enabled: a.audioStreamIndex === 0,
+        enabled: false,
       }));
-      this.activeAudioStreamIndex = 0;
-      this.activeAudio = this.audioTracks[0]?.label || 'Default Audio';
-      console.log(`[WorkerSession:${this.guildId}] Discovered ${this.audioTracks.length} audio tracks.`);
+
+      // Find first English track, or fallback to Track 0
+      const englishIndex = this.audioTracks.findIndex(
+        (t) => t.language.toLowerCase().includes('english') || t.label.toLowerCase().includes('english')
+      );
+      this.activeAudioStreamIndex = englishIndex >= 0 ? englishIndex : 0;
+      this.audioTracks[this.activeAudioStreamIndex].enabled = true;
+      this.activeAudio = this.audioTracks[this.activeAudioStreamIndex]?.label || 'Default Audio';
+      console.log(`[WorkerSession:${this.guildId}] Discovered ${this.audioTracks.length} audio tracks. Active: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}]`);
     } else {
-      this.audioTracks = [{ id: '0', label: 'Default Stereo Audio', language: 'en', enabled: true }];
+      this.audioTracks = [{ id: '0', label: 'Default Stereo Audio (English)', language: 'en', enabled: true }];
       this.activeAudioStreamIndex = 0;
-      this.activeAudio = 'Default Stereo Audio';
+      this.activeAudio = 'Default Stereo Audio (English)';
     }
 
     this.availableSubtitlesMap.clear();

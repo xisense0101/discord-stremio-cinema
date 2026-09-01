@@ -68,7 +68,7 @@ function formatChannelLayout(channels: number, layout?: string): string {
  */
 export async function probeEmbeddedAudioTracks(
   streamUrl: string,
-  timeoutMs: number = 2500
+  timeoutMs: number = 5000
 ): Promise<AudioTrackInfo[]> {
   try {
     const { spawn } = await import('child_process');
@@ -78,9 +78,9 @@ export async function probeEmbeddedAudioTracks(
       '-print_format', 'json',
       '-show_streams',
       '-select_streams', 'a',
-      '-probesize', '2000000',
-      '-analyzeduration', '1500000',
-      '-headers', 'User-Agent: DiscordStremioPlayer/1.0\r\n',
+      '-probesize', '5000000',
+      '-analyzeduration', '3000000',
+      '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n',
       streamUrl,
     ]);
 
@@ -110,7 +110,7 @@ export async function probeEmbeddedAudioTracks(
 
     const tracks: AudioTrackInfo[] = audioStreams.map((s: any, audioIndex: number) => {
       const rawLang = (s.tags?.language || 'und').toLowerCase();
-      const langName = LANGUAGE_NAMES[rawLang] || rawLang.toUpperCase();
+      const langName = LANGUAGE_NAMES[rawLang] || (rawLang !== 'und' ? rawLang.toUpperCase() : 'English');
       const channels = s.channels || 2;
       const channelLayoutStr = formatChannelLayout(channels, s.channel_layout);
       const codec = (s.codec_name || 'aac').toUpperCase();

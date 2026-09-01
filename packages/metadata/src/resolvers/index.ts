@@ -10,12 +10,19 @@ export async function resolveMediaStreams(
   episode?: number,
   preferredQuality?: string
 ): Promise<MediaStream[]> {
-  if (config.torbox.resolverMode === 'aiostreams') {
-    const aioStreams = await aiostreamsResolver.resolveStreams(type, imdbId, season, episode);
-    if (aioStreams.length > 0) return aioStreams;
+  // 1. Primary: AIOStreams Resolver
+  if (config.torbox.resolverMode === 'aiostreams' || config.torbox.aiostreamsUrl) {
+    try {
+      const aioStreams = await aiostreamsResolver.resolveStreams(type, imdbId, season, episode, preferredQuality);
+      if (aioStreams.length > 0) {
+        return aioStreams;
+      }
+    } catch (err) {
+      console.warn('[ResolveMediaStreams] AIOStreams resolve warning:', (err as Error).message);
+    }
   }
 
-  // Default to Direct TorBox / Torrentio-TorBox
+  // 2. Fallback: Direct TorBox / Torrentio Scraper
   return torboxResolver.resolveStreams(type, imdbId, season, episode, preferredQuality);
 }
 
