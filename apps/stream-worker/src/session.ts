@@ -257,27 +257,45 @@ export class WorkerGuildSession {
       `[WorkerSession:${this.guildId}] Starting stream segment (${this.qualityLabel}, Audio: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}], Seek: ${seekSeconds}s, Subtitles: "${this.activeSubtitle}")...`
     );
 
-    const customInputOptions = seekSeconds > 0 ? ['-ss', String(seekSeconds)] : [];
-
-    // Custom audio mapping + filtering: dialogue matrix + volume boost
-    const customFfmpegFlags: string[] = [
-      '-map',
-      '0:v:0',
-      '-map',
-      `0:a:${this.activeAudioStreamIndex}?`,
-      '-af',
-      'volume=1.4,pan=stereo|c0=c2+0.6*c0+0.6*c4|c1=c2+0.6*c1+0.6*c5',
+    const customInputOptions: string[] = [
+      ...(seekSeconds > 0 ? ['-ss', String(seekSeconds)] : []),
+      '-reconnect', '1',
+      '-reconnect_at_eof', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-probesize', '15M',
+      '-analyzeduration', '15M',
+      '-threads', '4',
     ];
+
+    // Single unified filtergraph for video (scaling + subtitle rendering)
+    const vfFilters: string[] = [];
 
     if (this.activeSubtitle !== 'Off' && this.activeSubtitlePath && fs.existsSync(this.activeSubtitlePath)) {
       // Offset PTS by seekSeconds minus subtitleDelaySeconds for frame-accurate timing
       const effectiveTime = Math.max(0, seekSeconds - this.subtitleDelaySeconds);
-      const vfFilter = (seekSeconds > 0 || this.subtitleDelaySeconds !== 0)
+      const subFilter = (seekSeconds > 0 || this.subtitleDelaySeconds !== 0)
         ? `setpts=PTS+${effectiveTime}/TB,subtitles=${this.activeSubtitlePath}:force_style='FontSize=15,PrimaryColour=&H00FFFFFF,OutlineColour=&H90000000,BorderStyle=1,Outline=1.2,Shadow=0.5,MarginV=25',setpts=PTS-STARTPTS`
         : `subtitles=${this.activeSubtitlePath}:force_style='FontSize=15,PrimaryColour=&H00FFFFFF,OutlineColour=&H90000000,BorderStyle=1,Outline=1.2,Shadow=0.5,MarginV=25'`;
 
-      customFfmpegFlags.push('-vf', vfFilter);
-      console.log(`[WorkerSession:${this.guildId}] Subtitle filter active (${this.activeSubtitle} at effective seek ${effectiveTime}s): ${this.activeSubtitlePath}`);
+      vfFilters.push(subFilter);
+      console.log(`[WorkerSession:${this.guildId}] Unified subtitle filter active (${this.activeSubtitle} at effective seek ${effectiveTime}s): ${this.activeSubtitlePath}`);
+    }
+
+    // Custom audio mapping + filtering: dialogue matrix + volume boost
+    const customFfmpegFlags: string[] = [
+      '-threads', '4',
+      '-filter_threads', '4',
+      '-b:v', `${this.streamBitrateKbps}k`,
+      '-maxrate:v', `${this.streamBitrateKbps}k`,
+      '-bufsize:v', `${this.streamBitrateKbps}k`,
+      '-map', '0:v:0',
+      '-map', `0:a:${this.activeAudioStreamIndex}?`,
+      '-af', 'volume=1.4,pan=stereo|c0=c2+0.6*c0+0.6*c4|c1=c2+0.6*c1+0.6*c5',
+    ];
+
+    if (vfFilters.length > 0) {
+      customFfmpegFlags.push('-vf', vfFilters.join(','));
     }
 
     const { command, output } = prepareStream(this.resolvedCdnUrl, {
@@ -477,8 +495,8 @@ export class WorkerGuildSession {
       this.qualityLabel = '1080p FHD';
       this.streamWidth = 1920;
       this.streamHeight = 1080;
-      this.streamBitrateKbps = 5000;
-      this.streamMaxBitrateKbps = 7000;
+      this.streamBitrateKbps = 4500;
+      this.streamMaxBitrateKbps = 4500;
     }
   }
 
