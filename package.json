@@ -8,6 +8,15 @@
     "apps/*",
     "packages/*"
   ],
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@lng2004/node-datachannel",
+      "node-av",
+      "sharp",
+      "zeromq",
+      "esbuild"
+    ]
+  },
   "scripts": {
     "build:packages": "pnpm -r --filter './packages/*' run build",
     "build:apps": "pnpm -r --filter './apps/*' run build",

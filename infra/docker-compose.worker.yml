@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  stream-worker:
+    image: ghcr.io/xisense0101/discord-stremio-worker:latest
+    container_name: stremio_stream_worker
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.00'
+          memory: 2560M
+        reservations:
+          cpus: '1.00'
+          memory: 1536M
+    mem_limit: 2560m
+    mem_reservation: 1536m
+    cpus: 2.0
+    ipc: host
+    tmpfs:
+      - /tmp:size=256M,mode=1777
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=1536
+      - WORKER_PORT=4001
+      - PORT=4001
+      - PUPPETEER_HEADLESS=true
+    volumes:
+      - /opt/streamer/.env:/app/.env
+      - /opt/streamer/data:/app/data

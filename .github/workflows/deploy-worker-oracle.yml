@@ -1,0 +1,153 @@
+name: Deploy Stream Worker to Oracle Cloud VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/stream-worker/**'
+      - 'packages/**'
+      - 'infra/**'
+      - '.github/workflows/deploy-worker-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/discord-stremio-worker
+
+jobs:
+  build-and-push:
+    name: 🐳 Build & Push Multi-Arch Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Set up QEMU (ARM64 & AMD64)
+        uses: docker/setup-qemu-action@v3
+
+      - name: 🛠️ Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Extract Metadata (Tags, Labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: 🚀 Build & Push Multi-Arch Container Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./infra/Dockerfile.worker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-to-oracle:
+    name: 🌐 Deploy Sandboxed Worker on Oracle VPS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🚀 Deploy via SSH to Oracle VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.OCI_HOST }}
+          username: ${{ secrets.OCI_USERNAME }}
+          key: ${{ secrets.OCI_SSH_KEY }}
+          port: ${{ secrets.OCI_SSH_PORT || 22 }}
+          script: |
+            set -e
+            echo "=========================================================="
+            echo "🚀 Starting Discord Stream Worker Deployment on Oracle VPS"
+            echo "=========================================================="
+
+            # 1. Ensure persistent directories exist
+            sudo mkdir -p /opt/streamer/data
+            sudo chown -R $USER:$USER /opt/streamer
+
+            # 2. Bootstrap .env file if it does not already exist
+            if [ ! -f /opt/streamer/.env ]; then
+              echo "Creating initial .env template..."
+              touch /opt/streamer/.env
+            fi
+
+            # 3. Copy Docker Compose file
+            cat << 'COMPOSE_EOF' > /opt/streamer/docker-compose.yml
+            version: '3.8'
+
+            services:
+              stream-worker:
+                image: ghcr.io/${{ github.repository_owner }}/discord-stremio-worker:latest
+                container_name: stremio_stream_worker
+                restart: unless-stopped
+                deploy:
+                  resources:
+                    limits:
+                      cpus: '2.00'
+                      memory: 2560M
+                    reservations:
+                      cpus: '1.00'
+                      memory: 1536M
+                mem_limit: 2560m
+                mem_reservation: 1536m
+                cpus: 2.0
+                ipc: host
+                tmpfs:
+                  - /tmp:size=256M,mode=1777
+                ports:
+                  - "4001:4001"
+                environment:
+                  - NODE_ENV=production
+                  - NODE_OPTIONS=--max-old-space-size=1536
+                  - WORKER_PORT=4001
+                  - PORT=4001
+                  - PUPPETEER_HEADLESS=true
+                volumes:
+                  - /opt/streamer/.env:/app/.env
+                  - /opt/streamer/data:/app/data
+            COMPOSE_EOF
+
+            # 4. Pull latest image from GHCR
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker compose -f /opt/streamer/docker-compose.yml pull
+
+            # 5. Zero-downtime container restart
+            docker compose -f /opt/streamer/docker-compose.yml up -d --remove-orphans
+
+            # 6. Verify health check
+            echo "Waiting for Stream Worker container to initialize..."
+            sleep 6
+            for i in {1..10}; do
+              if curl -s -f http://127.0.0.1:4001/health > /dev/null; then
+                echo "✅ Stream Worker is healthy and listening on Port 4001!"
+                docker ps --filter "name=stremio_stream_worker"
+                exit 0
+              fi
+              echo "Waiting for healthcheck ($i/10)..."
+              sleep 2
+            done
+
+            echo "❌ Worker failed healthcheck after 26s"
+            docker logs --tail 50 stremio_stream_worker
+            exit 1
