@@ -7,8 +7,8 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 export const AUTH_COOKIE_NAME = 'stremio_cinema_session';
-export const AUTH_USER = 'senzu';
-export const AUTH_PASS = 'herewegoagain';
+export const AUTH_USER = process.env.WEB_USERNAME || 'senzu';
+export const AUTH_PASS = process.env.WEB_PASSWORD || 'herewegoagain';
 export const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60; // 604800s (7 days)
 
 export async function createSessionToken(username: string): Promise<string> {
