@@ -352,10 +352,70 @@ export class WorkerGuildSession {
 
   private async startStreamSegment(seekSeconds: number = 0): Promise<void> {
     // Claim this attempt's generation. If a newer call to startStreamSegment
-    // supersedes us before we finish priming (e.g. the user double-clicks a
-    // quality change), we bail out after priming instead of racing to become
-    // the active stream.
+    // supersedes us before we finish (e.g. the user double-clicks a quality
+    // change), we bail out instead of racing to become the active stream.
     const generation = ++this.segmentGeneration;
+
+    const RECONNECT_SETTLE_MS = 600;
+
+    // Kill the previous segment's ffmpeg and confirm it has fully exited
+    // BEFORE starting the new one. This is a deliberate ordering choice.
+    //
+    // An earlier version primed (built + connected) the new ffmpeg process
+    // BEFORE touching the old one, specifically to shrink the visible gap on
+    // viewers' screens. That is wrong for this app's debrid CDN sources:
+    // real production logs showed the old and new ffmpeg processes both
+    // connected to the IDENTICAL debrid URL (TorBox tb-cdn.pw link)
+    // simultaneously for ~5 seconds during a subtitle/seek change. The new
+    // connection's demuxer found the stream headers fine, then hit
+    // "Reached end of stream" within ~1s of actually being swapped in -
+    // consistent with the CDN enforcing one connection per link and
+    // truncating/rejecting the second, concurrent connection to the same
+    // URL. Because more than 30s of playback position had already elapsed,
+    // that premature EOF was treated as "movie finished" (see the 'end'
+    // handler below), ending playback outright instead of resuming - this
+    // is what made subtitle/quality/seek changes appear to permanently kill
+    // the stream. Never open a second connection to the same source URL
+    // while the first is still open.
+    if (this.activeFfmpegCommand) {
+      const dying = this.activeFfmpegCommand;
+      this.activeFfmpegCommand = null;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        dying.once('error', done);
+        dying.once('end', done);
+        setTimeout(done, 400);
+        try {
+          dying.kill('SIGKILL');
+        } catch {
+          done();
+        }
+      });
+
+      try {
+        this.streamer.stopStream();
+      } catch {}
+
+      // Give Discord's gateway a moment to process the STREAM_DELETE before
+      // the next segment's playStream() sends STREAM_CREATE - calling them
+      // back-to-back risks the new handshake hanging forever (verified live).
+      await new Promise((resolve) => setTimeout(resolve, RECONNECT_SETTLE_MS));
+
+      if (generation !== this.segmentGeneration) {
+        console.warn(`[WorkerSession:${this.guildId}] Superseded while the previous segment was closing.`);
+        return;
+      }
+    }
+
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+      this.progressInterval = null;
+    }
 
     const encoder = Encoders.software({
       x264: {
@@ -417,10 +477,8 @@ export class WorkerGuildSession {
       customFfmpegFlags.push('-vf', vfFilters.join(','));
     }
 
-    // Build and prime the new ffmpeg process BEFORE touching the currently
-    // playing one. Connecting to and probing the CDN source can take a
-    // couple of seconds; doing that while the old stream keeps playing means
-    // viewers only see a gap for the final swap, not the whole reconnect.
+    // Only NOW - after the previous segment's connection to this same
+    // source URL has been fully closed above - open the new one.
     const { command, output } = prepareStream(this.resolvedCdnUrl, {
       encoder,
       width: this.streamWidth,
@@ -443,92 +501,18 @@ export class WorkerGuildSession {
         output.once('readable', () => resolve());
       });
     } catch (err) {
-      console.warn(`[WorkerSession:${this.guildId}] New segment failed to prime, keeping previous stream:`, (err as Error).message);
+      console.warn(`[WorkerSession:${this.guildId}] New segment failed to start:`, (err as Error).message);
       try { command.kill('SIGKILL'); } catch {}
+      this.playbackStatus = 'ERROR';
       return;
     }
 
-    // A newer request already superseded this one while we were priming;
-    // discard this primed-but-stale process instead of swapping it in.
+    // A newer request already superseded this one while we were connecting;
+    // discard this stale process instead of swapping it in.
     if (generation !== this.segmentGeneration) {
-      console.warn(`[WorkerSession:${this.guildId}] Superseded by a newer segment request, discarding primed ffmpeg process.`);
+      console.warn(`[WorkerSession:${this.guildId}] Superseded by a newer segment request, discarding new ffmpeg process.`);
       try { command.kill('SIGKILL'); } catch {}
       return;
-    }
-
-    // Now swap: terminate the previous ffmpeg process, wait for it to
-    // actually finish dying, tear down the Discord stream connection, then
-    // give Discord's gateway a moment to settle before handing the primed
-    // output to a freshly-created connection.
-    //
-    // Two things were tried and rejected before this, both verified live
-    // against the real Discord account:
-    //
-    // 1. Killing the old ffmpeg and immediately calling stopStream() +
-    //    playStream() back-to-back (no wait, no delay) races Discord's
-    //    gateway: stopStream() sends STREAM_DELETE and immediately rips out
-    //    the STREAM_CREATE/STREAM_SERVER_UPDATE listeners; playStream()'s
-    //    createStream() sends STREAM_CREATE moments later, and if they land
-    //    too close together on Discord's gateway the new handshake can hang
-    //    forever (createStream()'s promise never resolves, playStream() is
-    //    fire-and-forget, so nothing ever surfaces the failure). This is
-    //    what made subtitle/quality/seek changes appear to permanently kill
-    //    the stream.
-    // 2. Skipping stopStream() entirely and reusing the existing
-    //    voiceConnection.streamConnection/webRtcConn (so playStream() pipes
-    //    into the same native WebRTC connection) avoids the gateway
-    //    round-trip and swaps almost instantly - but repeatedly resetting
-    //    the native packetizer/SRTP state on the same connection across
-    //    several consecutive swaps is not safe in the underlying native
-    //    addon: it survived 1-2 swaps, then hard-crashed the whole worker
-    //    process on the 3rd (native "SRTP protect error" with no catchable
-    //    JS exception - uncaughtException/unhandledRejection handlers
-    //    cannot save you from a native-layer crash). Not acceptable - a
-    //    real viewing session easily does 3+ quality/seek/subtitle changes.
-    //
-    // The fix: always create a fresh connection (safe - no native state
-    // reuse) but wait for the old process to actually finish dying, then
-    // insert a short deliberate delay before calling playStream() so
-    // Discord's gateway has time to process the STREAM_DELETE before the
-    // next STREAM_CREATE arrives.
-    const RECONNECT_SETTLE_MS = 600;
-
-    if (this.activeFfmpegCommand) {
-      const dying = this.activeFfmpegCommand;
-      await new Promise<void>((resolve) => {
-        let settled = false;
-        const done = () => {
-          if (settled) return;
-          settled = true;
-          resolve();
-        };
-        dying.once('error', done);
-        dying.once('end', done);
-        setTimeout(done, 400);
-        try {
-          dying.kill('SIGKILL');
-        } catch {
-          done();
-        }
-      });
-
-      try {
-        this.streamer.stopStream();
-      } catch {}
-
-      await new Promise((resolve) => setTimeout(resolve, RECONNECT_SETTLE_MS));
-
-      // Another request could have superseded us again during that wait.
-      if (generation !== this.segmentGeneration) {
-        console.warn(`[WorkerSession:${this.guildId}] Superseded while reconnecting, discarding primed ffmpeg process.`);
-        try { command.kill('SIGKILL'); } catch {}
-        return;
-      }
-    }
-
-    if (this.progressInterval) {
-      clearInterval(this.progressInterval);
-      this.progressInterval = null;
     }
 
     this.activeFfmpegCommand = command;
