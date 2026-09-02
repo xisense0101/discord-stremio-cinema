@@ -1,6 +1,7 @@
 import http from 'http';
 import { SessionManager } from './session-manager.js';
 import { TokenManager } from './token-manager.js';
+import { undeafenStreamer } from './session.js';
 import { getSystemMetrics } from '@discord-stremio/diagnostics';
 import config from '@discord-stremio/config';
 
@@ -17,6 +18,7 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
       const joinPromise = sessionManager.streamer.joinVoice(guildId, voiceChannelId);
       const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
       await Promise.race([joinPromise, timeoutPromise]);
+      undeafenStreamer(sessionManager.streamer, guildId, voiceChannelId);
     } catch (err) {
       console.warn('[IPC] joinVoice notice:', (err as Error).message);
     }

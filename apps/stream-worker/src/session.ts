@@ -12,6 +12,33 @@ import {
 } from '@discord-stremio/metadata';
 import config from '@discord-stremio/config';
 
+/**
+ * @dank074/discord-video-stream's Streamer.joinVoice() always sends
+ * self_deaf: true on the initial VOICE_STATE_UPDATE (self_mute is already
+ * false) - purely cosmetic for this headless worker (the Go-Live stream's
+ * audio/video goes out over a separate stream connection, unaffected by the
+ * regular voice self_deaf/self_mute flags; nothing here consumes incoming
+ * voice audio either way), but shows a "deafened" icon next to the bot in
+ * Discord's member list. Send one follow-up VOICE_STATE_UPDATE - the same
+ * raw gateway call the library itself uses - to clear it.
+ */
+export function undeafenStreamer(streamer: Streamer, guildId: string, channelId: string): void {
+  try {
+    (streamer.client as any).ws.broadcast({
+      op: 4, // Gateway opcode VOICE_STATE_UPDATE
+      d: {
+        guild_id: guildId,
+        channel_id: channelId,
+        self_mute: false,
+        self_deaf: false,
+        self_video: false,
+      },
+    });
+  } catch (err) {
+    console.warn(`[WorkerSession:${guildId}] undeafenStreamer notice:`, (err as Error).message);
+  }
+}
+
 export class WorkerGuildSession {
   public readonly guildId: string;
   public voiceChannelId: string | null = null;
@@ -194,6 +221,7 @@ export class WorkerGuildSession {
         try {
           console.log(`[WorkerSession:${this.guildId}] Connecting to voice channel ${this.voiceChannelId}...`);
           await this.streamer.joinVoice(this.guildId, this.voiceChannelId);
+          undeafenStreamer(this.streamer, this.guildId, this.voiceChannelId);
           this.isVoiceConnected = true;
           console.log(`[WorkerSession:${this.guildId}] Voice channel connected.`);
         } catch (err) {
