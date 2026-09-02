@@ -4,19 +4,11 @@
   "description": "Production-grade Discord Movie & TV streaming platform using Stremio, Puppeteer and Discord Go-Live transport",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@lng2004/node-datachannel",
-      "node-av",
-      "sharp",
-      "zeromq",
-      "esbuild"
-    ]
-  },
   "scripts": {
     "build:packages": "pnpm -r --filter './packages/*' run build",
     "build:apps": "pnpm -r --filter './apps/*' run build",
