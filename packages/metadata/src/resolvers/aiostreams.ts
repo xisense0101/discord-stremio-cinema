@@ -103,17 +103,58 @@ export class AIOStreamsResolver {
     }
 
     // Parse Language Score & Tag
+    //
+    // Every language marker is detected INDEPENDENTLY - none of them are
+    // gated on "not also English". Bracket-list multi-dub tags like
+    // "[Tam + Tel + Hin + Eng]" (a real release that reproduced this bug)
+    // contain the literal word "Eng", so gating other-language detection on
+    // "!isExplicitEnglish" silently disqualified the Hindi/Tamil/Telugu
+    // match, fell through every branch, and landed on the default
+    // languageScore=100 "English (Original)" - ranking a Tamil-first
+    // multi-dub release identically to a genuinely English-only source.
+    // Note: only the CLASSIFICATION below was fixed - rankStreams()'s sort
+    // priority (language score, then quality) is unchanged.
+    const isExplicitEnglish = /\b(english|eng)\b/i.test(fullText) || bingeGroup.includes('English');
     const isKorean = /\b(korean|kor|gisaengchung|hangeul)\b/i.test(fullText) || bingeGroup.includes('Korean');
-    const isJapanese = /\b(japanese|jpn|anime|dual[- ]?audio)\b/i.test(fullText) || bingeGroup.includes('Japanese');
-    const isMulti = /\b(multi|multisubs|dual[- ]?audio|ita[.-]eng|eng[.-]ita|fre[.-]eng|eng[.-]fre|hindi[.-]english|english[.-]hindi)\b/i.test(fullText);
-    const isExplicitEnglish = /\b(english|eng|en)\b/i.test(fullText) || bingeGroup.includes('English');
-    const isFrench = /\b(french|truefrench|vff|vf2|vfi|vof|vostfr|genemige)\b/i.test(fullText) || (bingeGroup.includes('French') && !bingeGroup.includes('English'));
-    const isItalian = (/\b(italian|ita|corsaronero)\b/i.test(fullText) || bingeGroup.includes('Italian')) && !isExplicitEnglish;
-    const isRussian = (/\b(russian|rus|nnnb)\b/i.test(fullText) || /[а-яА-ЯёЁ]/.test(fullText) || bingeGroup.includes('Russian')) && !isExplicitEnglish;
-    const isPortuguese = (/\b(portuguese|dublado|pt[- ]?br)\b/i.test(fullText) || bingeGroup.includes('Portuguese')) && !isExplicitEnglish;
-    const isSpanish = (/\b(spanish|castellano|latino|espanol|esp)\b/i.test(fullText) || bingeGroup.includes('Spanish')) && !isExplicitEnglish;
-    const isGerman = (/\b(german|deutsch|ger)\b/i.test(fullText) || bingeGroup.includes('German')) && !isExplicitEnglish;
-    const isHindi = (/\b(hindi|hin)\b/i.test(fullText) || bingeGroup.includes('Hindi')) && !isExplicitEnglish;
+    // "dual audio" alone does NOT imply Japanese - it just means the file
+    // has 2+ audio tracks, which could be any language pairing.
+    const isJapanese = /\b(japanese|jpn|anime)\b/i.test(fullText) || bingeGroup.includes('Japanese');
+    const isFrench = /\b(french|truefrench|vff|vf2|vfi|vof|vostfr|genemige)\b/i.test(fullText) || bingeGroup.includes('French');
+    const isItalian = /\b(italian|ita|corsaronero)\b/i.test(fullText) || bingeGroup.includes('Italian');
+    const isRussian = /\b(russian|rus|nnnb)\b/i.test(fullText) || /[а-яА-ЯёЁ]/.test(fullText) || bingeGroup.includes('Russian');
+    const isPortuguese = /\b(portuguese|dublado|pt[- ]?br)\b/i.test(fullText) || bingeGroup.includes('Portuguese');
+    const isSpanish = /\b(spanish|castellano|latino|espanol|esp)\b/i.test(fullText) || bingeGroup.includes('Spanish');
+    const isGerman = /\b(german|deutsch|ger)\b/i.test(fullText) || bingeGroup.includes('German');
+    const isHindi = /\b(hindi|hin)\b/i.test(fullText) || bingeGroup.includes('Hindi');
+    const isTamil = /\b(tamil|tam)\b/i.test(fullText) || bingeGroup.includes('Tamil');
+    const isTelugu = /\b(telugu|tel)\b/i.test(fullText) || bingeGroup.includes('Telugu');
+    const isMalayalam = /\b(malayalam|mal)\b/i.test(fullText) || bingeGroup.includes('Malayalam');
+    const isKannada = /\b(kannada|kan)\b/i.test(fullText) || bingeGroup.includes('Kannada');
+    const isBengali = /\b(bengali|ben)\b/i.test(fullText) || bingeGroup.includes('Bengali');
+    const isPunjabi = /\b(punjabi|pun)\b/i.test(fullText) || bingeGroup.includes('Punjabi');
+    const isMarathi = /\b(marathi|mar)\b/i.test(fullText) || bingeGroup.includes('Marathi');
+    const isGujarati = /\b(gujarati|guj)\b/i.test(fullText) || bingeGroup.includes('Gujarati');
+
+    const otherLanguages: Array<[boolean, string]> = [
+      [isHindi, 'Hindi'],
+      [isTamil, 'Tamil'],
+      [isTelugu, 'Telugu'],
+      [isMalayalam, 'Malayalam'],
+      [isKannada, 'Kannada'],
+      [isBengali, 'Bengali'],
+      [isPunjabi, 'Punjabi'],
+      [isGujarati, 'Gujarati'],
+      [isMarathi, 'Marathi'],
+      [isFrench, 'French'],
+      [isItalian, 'Italian'],
+      [isRussian, 'Russian'],
+      [isPortuguese, 'Portuguese'],
+      [isSpanish, 'Spanish'],
+      [isGerman, 'German'],
+    ];
+    const matchedOtherLanguages = otherLanguages.filter(([hit]) => hit).map(([, name]) => name);
+    const explicitMultiTag = /\b(multi|multisubs|dual[- ]?audio)\b/i.test(fullText);
+    const isMulti = explicitMultiTag || (isExplicitEnglish && matchedOtherLanguages.length > 0) || matchedOtherLanguages.length > 1;
 
     let languageLabel = 'English (Original)';
     let languageScore = 100;
@@ -124,31 +165,15 @@ export class AIOStreamsResolver {
     } else if (isJapanese) {
       languageLabel = isMulti || isExplicitEnglish ? 'Japanese (Original / Multi)' : 'Japanese (Original)';
       languageScore = 100;
-    } else if (isMulti || (isExplicitEnglish && (isFrench || isItalian || isSpanish || isGerman || isRussian || isHindi))) {
-      languageLabel = 'Multi-Audio (ENG+)';
+    } else if (isMulti) {
+      languageLabel = matchedOtherLanguages.length > 0 ? `Multi-Audio (ENG + ${matchedOtherLanguages[0]})` : 'Multi-Audio (ENG+)';
       languageScore = 90;
-    } else if (isFrench) {
-      languageLabel = 'French (VFF/VF)';
-      languageScore = 10;
-    } else if (isItalian) {
-      languageLabel = 'Italian';
-      languageScore = 10;
-    } else if (isRussian) {
-      languageLabel = 'Russian';
-      languageScore = 10;
-    } else if (isPortuguese) {
-      languageLabel = 'Portuguese (Dublado)';
-      languageScore = 10;
-    } else if (isSpanish) {
-      languageLabel = 'Spanish (Latino/Castellano)';
-      languageScore = 10;
-    } else if (isGerman) {
-      languageLabel = 'German';
-      languageScore = 10;
-    } else if (isHindi) {
-      languageLabel = 'Hindi';
+    } else if (!isExplicitEnglish && matchedOtherLanguages.length > 0) {
+      languageLabel = matchedOtherLanguages[0];
       languageScore = 10;
     }
+    // else: no non-English language markers detected at all - keep the
+    // default English (Original) / 100.
 
     const displayTitle = filename.replace(/\.[a-zA-Z0-9]+$/, '') || rawName;
 

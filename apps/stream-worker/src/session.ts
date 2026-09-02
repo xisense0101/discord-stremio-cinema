@@ -219,7 +219,7 @@ export class WorkerGuildSession {
       probeEmbeddedAudioTracks(probeTargetUrl, 5000).catch(() => [] as AudioTrackInfo[]),
     ]);
 
-    // Load multi-language Audio Tracks & auto-select English
+    // Load multi-language Audio Tracks & auto-select the intended default
     if (probedAudioTracks && probedAudioTracks.length > 0) {
       this.audioTracks = probedAudioTracks.map((a: AudioTrackInfo) => ({
         id: String(a.audioStreamIndex),
@@ -228,21 +228,38 @@ export class WorkerGuildSession {
         enabled: false,
       }));
 
-      // Default to Track 0 (Original Audio / Main Dialogue in container) unless Track 0 is a commentary track
-      let defaultTrackIndex = 0;
       const isCommentary = (label: string) => {
         const l = label.toLowerCase();
         return l.includes('commentary') || l.includes('description') || l.includes('director');
       };
-      if (isCommentary(this.audioTracks[0]?.label || '')) {
-        const nonCommentary = this.audioTracks.findIndex((t) => !isCommentary(t.label));
-        if (nonCommentary >= 0) defaultTrackIndex = nonCommentary;
-      }
+      const isEnglish = (t: AudioTrackInfo) =>
+        t.language.toLowerCase() === 'english' || t.rawLanguage === 'eng' || t.rawLanguage === 'en';
+
+      const eligible = probedAudioTracks
+        .map((t, i) => ({ t, i }))
+        .filter(({ t }) => !isCommentary(t.label));
+      const pool = eligible.length > 0 ? eligible : probedAudioTracks.map((t, i) => ({ t, i }));
+
+      // Priority: 1) English by language tag, 2) container-flagged default
+      // track (ffprobe disposition), 3) first eligible (non-commentary)
+      // track as a last resort.
+      //
+      // English outranks the container's own default flag on purpose: real
+      // multi-dub releases (verified against a live "How to Train Your
+      // Dragon" torrent) routinely ship with disposition:default=1 set on a
+      // regional dub - e.g. a Tamil-focused uploader's mux flags the Tamil
+      // track as "default" even though an English track exists in the same
+      // file - so trusting that flag over an explicit English match
+      // reproduces exactly the wrong-dub bug this is meant to fix.
+      const englishTrack = pool.find(({ t }) => isEnglish(t));
+      const defaultFlagged = pool.find(({ t }) => t.isDefault);
+      const chosen = englishTrack || defaultFlagged || pool[0];
+      const defaultTrackIndex = chosen.i;
 
       this.activeAudioStreamIndex = defaultTrackIndex;
       this.audioTracks[this.activeAudioStreamIndex].enabled = true;
       this.activeAudio = this.audioTracks[this.activeAudioStreamIndex]?.label || 'Default Audio';
-      console.log(`[WorkerSession:${this.guildId}] Discovered ${this.audioTracks.length} audio tracks. Active: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}]`);
+      console.log(`[WorkerSession:${this.guildId}] Discovered ${this.audioTracks.length} audio tracks. Active: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}] (reason: ${englishTrack ? 'English match' : defaultFlagged ? 'container default flag' : 'first eligible track'})`);
     } else {
       this.audioTracks = [{ id: '0', label: 'Default Stereo Audio (English)', language: 'en', enabled: true }];
       this.activeAudioStreamIndex = 0;
@@ -411,17 +428,75 @@ export class WorkerGuildSession {
       return;
     }
 
-    // Now swap: terminate the previous ffmpeg process and packetizer, then
-    // hand the primed, ready-to-go output to the Go-Live streamer.
-    if (this.activeFfmpegCommand) {
-      try {
-        this.activeFfmpegCommand.kill('SIGKILL');
-      } catch {}
-    }
+    // Now swap: terminate the previous ffmpeg process, wait for it to
+    // actually finish dying, tear down the Discord stream connection, then
+    // give Discord's gateway a moment to settle before handing the primed
+    // output to a freshly-created connection.
+    //
+    // Two things were tried and rejected before this, both verified live
+    // against the real Discord account:
+    //
+    // 1. Killing the old ffmpeg and immediately calling stopStream() +
+    //    playStream() back-to-back (no wait, no delay) races Discord's
+    //    gateway: stopStream() sends STREAM_DELETE and immediately rips out
+    //    the STREAM_CREATE/STREAM_SERVER_UPDATE listeners; playStream()'s
+    //    createStream() sends STREAM_CREATE moments later, and if they land
+    //    too close together on Discord's gateway the new handshake can hang
+    //    forever (createStream()'s promise never resolves, playStream() is
+    //    fire-and-forget, so nothing ever surfaces the failure). This is
+    //    what made subtitle/quality/seek changes appear to permanently kill
+    //    the stream.
+    // 2. Skipping stopStream() entirely and reusing the existing
+    //    voiceConnection.streamConnection/webRtcConn (so playStream() pipes
+    //    into the same native WebRTC connection) avoids the gateway
+    //    round-trip and swaps almost instantly - but repeatedly resetting
+    //    the native packetizer/SRTP state on the same connection across
+    //    several consecutive swaps is not safe in the underlying native
+    //    addon: it survived 1-2 swaps, then hard-crashed the whole worker
+    //    process on the 3rd (native "SRTP protect error" with no catchable
+    //    JS exception - uncaughtException/unhandledRejection handlers
+    //    cannot save you from a native-layer crash). Not acceptable - a
+    //    real viewing session easily does 3+ quality/seek/subtitle changes.
+    //
+    // The fix: always create a fresh connection (safe - no native state
+    // reuse) but wait for the old process to actually finish dying, then
+    // insert a short deliberate delay before calling playStream() so
+    // Discord's gateway has time to process the STREAM_DELETE before the
+    // next STREAM_CREATE arrives.
+    const RECONNECT_SETTLE_MS = 600;
 
-    try {
-      this.streamer.stopStream();
-    } catch {}
+    if (this.activeFfmpegCommand) {
+      const dying = this.activeFfmpegCommand;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        dying.once('error', done);
+        dying.once('end', done);
+        setTimeout(done, 400);
+        try {
+          dying.kill('SIGKILL');
+        } catch {
+          done();
+        }
+      });
+
+      try {
+        this.streamer.stopStream();
+      } catch {}
+
+      await new Promise((resolve) => setTimeout(resolve, RECONNECT_SETTLE_MS));
+
+      // Another request could have superseded us again during that wait.
+      if (generation !== this.segmentGeneration) {
+        console.warn(`[WorkerSession:${this.guildId}] Superseded while reconnecting, discarding primed ffmpeg process.`);
+        try { command.kill('SIGKILL'); } catch {}
+        return;
+      }
+    }
 
     if (this.progressInterval) {
       clearInterval(this.progressInterval);
