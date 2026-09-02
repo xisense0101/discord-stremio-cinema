@@ -1,21 +1,33 @@
 version: '3.8'
 
+# Single source of truth for the stream-worker's production deployment.
+# .github/workflows/deploy-worker-oracle.yml copies this file to the VPS
+# as-is (with WORKER_IMAGE substituted) instead of embedding its own copy -
+# keep them in sync by editing only this file.
+#
+# Resource limits are tuned for a SHARED Oracle Always-Free VM.Standard.A1.Flex
+# (4 OCPU / 24GB total) that also runs other services (Judge0 sandbox, Postgres,
+# Redis, etc). Do not raise cpus much past ~2.5-3.0 here without checking what
+# else is running on the box - ffmpeg oversubscribing threads past its cgroup
+# CPU quota causes throttling stalls, which is the #1 cause of stream stutter.
+# STREAM_ENCODE_THREADS below should always be <= the cpus limit, rounded down.
+
 services:
   stream-worker:
-    image: discord-stremio-worker:latest
+    image: ${WORKER_IMAGE:-discord-stremio-worker:latest}
     container_name: stremio_stream_worker
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: '3.50'
+          cpus: '2.50'
           memory: 3072M
         reservations:
-          cpus: '1.00'
+          cpus: '1.50'
           memory: 1536M
     mem_limit: 3072m
     mem_reservation: 1536m
-    cpus: 3.5
+    cpus: 2.5
     ipc: host
     tmpfs:
       - /tmp:size=1024M,mode=1777
@@ -27,6 +39,7 @@ services:
       - WORKER_PORT=4001
       - PORT=4001
       - PUPPETEER_HEADLESS=true
+      - STREAM_ENCODE_THREADS=2
     volumes:
       - /opt/streamer/.env:/app/.env
       - /opt/streamer/data:/app/data

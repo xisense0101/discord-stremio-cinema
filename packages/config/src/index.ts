@@ -12,7 +12,7 @@ const ConfigSchema = z.object({
   DISCORD_CLIENT_ID: z.string().optional().default(''),
   DISCORD_STREAMER_TOKEN: z.string().min(1, 'DISCORD_STREAMER_TOKEN is required'),
 
-  TORBOX_API_KEY: z.string().optional().default('6eb85715-b543-41c3-ba65-25d0af51edd8'),
+  TORBOX_API_KEY: z.string().min(1, 'TORBOX_API_KEY is required'),
   RESOLVER_MODE: z.enum(['torbox-direct', 'aiostreams']).default('aiostreams'),
   AIOSTREAMS_URL: z.string().default('https://aiostreams.elfhosted.com/stremio/7ed277cb-23c5-47c7-bed8-422e3095a99f/eyJpIjoicndwc3NHYXF6RFZ3b0YzUXpZY0JEQT09IiwiZSI6ImRiZVpDK21TeHgwVTBjV0REYk5CRmt5cVFkVzBrOWhObGNCNHZhYXBtVHM9IiwidCI6ImEifQ/manifest.json'),
 
@@ -25,6 +25,12 @@ const ConfigSchema = z.object({
   STREAM_BITRATE_KBPS: z.coerce.number().default(6000),
   STREAM_MAX_BITRATE_KBPS: z.coerce.number().default(8000),
   STREAM_AUDIO_BITRATE_KBPS: z.coerce.number().default(128),
+  // Should roughly match the container/host's real CPU allocation (rounded down).
+  // Oversubscribing ffmpeg threads beyond a cgroup CPU quota causes CFS
+  // throttling stalls that show up as stream stutter, worst at high bitrates.
+  STREAM_ENCODE_THREADS: z.coerce.number().default(2),
+
+  WORKER_IPC_SECRET: z.string().optional().default(''),
 
   PUPPETEER_HEADLESS: z.coerce.boolean().default(true),
   CHROME_EXECUTABLE_PATH: z.string().default('/usr/bin/google-chrome'),
@@ -49,6 +55,7 @@ try {
   parsedConfig = ConfigSchema.parse({
     DISCORD_CONTROLLER_TOKEN: process.env.DISCORD_CONTROLLER_TOKEN || 'MISSING_CONTROLLER_TOKEN',
     DISCORD_STREAMER_TOKEN: process.env.DISCORD_STREAMER_TOKEN || 'MISSING_STREAMER_TOKEN',
+    TORBOX_API_KEY: process.env.TORBOX_API_KEY || 'MISSING_TORBOX_API_KEY',
   });
 }
 
@@ -76,6 +83,7 @@ export const config = {
     bitrateKbps: parsedConfig.STREAM_BITRATE_KBPS,
     maxBitrateKbps: parsedConfig.STREAM_MAX_BITRATE_KBPS,
     audioBitrateKbps: parsedConfig.STREAM_AUDIO_BITRATE_KBPS,
+    encodeThreads: Math.max(1, parsedConfig.STREAM_ENCODE_THREADS),
   },
   browser: {
     headless: parsedConfig.PUPPETEER_HEADLESS,
@@ -86,6 +94,7 @@ export const config = {
     port: parsedConfig.PORT,
     workerPort: parsedConfig.WORKER_PORT,
     isProduction: parsedConfig.NODE_ENV === 'production',
+    workerIpcSecret: parsedConfig.WORKER_IPC_SECRET,
   },
 };
 

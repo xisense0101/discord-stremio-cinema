@@ -21,6 +21,7 @@ export async function sendWorkerCommand(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(config.server.workerIpcSecret ? { 'x-worker-secret': config.server.workerIpcSecret } : {}),
       },
       body: JSON.stringify({
         id: `web_${Date.now()}_${Math.random().toString(36).substring(7)}`,

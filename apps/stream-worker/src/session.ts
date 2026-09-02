@@ -303,23 +303,14 @@ export class WorkerGuildSession {
     return this.getState();
   }
 
+  private segmentGeneration: number = 0;
+
   private async startStreamSegment(seekSeconds: number = 0): Promise<void> {
-    // Terminate previous FFmpeg process and stop previous Go-Live packetizer
-    if (this.activeFfmpegCommand) {
-      try {
-        this.activeFfmpegCommand.kill('SIGKILL');
-      } catch {}
-      this.activeFfmpegCommand = null;
-    }
-
-    try {
-      this.streamer.stopStream();
-    } catch {}
-
-    if (this.progressInterval) {
-      clearInterval(this.progressInterval);
-      this.progressInterval = null;
-    }
+    // Claim this attempt's generation. If a newer call to startStreamSegment
+    // supersedes us before we finish priming (e.g. the user double-clicks a
+    // quality change), we bail out after priming instead of racing to become
+    // the active stream.
+    const generation = ++this.segmentGeneration;
 
     const encoder = Encoders.software({
       x264: {
@@ -329,8 +320,10 @@ export class WorkerGuildSession {
     });
 
     console.log(
-      `[WorkerSession:${this.guildId}] Starting stream segment (${this.qualityLabel}, Audio: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}], Seek: ${seekSeconds}s, Subtitles: "${this.activeSubtitle}")...`
+      `[WorkerSession:${this.guildId}] Preparing stream segment (${this.qualityLabel}, Audio: "${this.activeAudio}" [0:a:${this.activeAudioStreamIndex}], Seek: ${seekSeconds}s, Subtitles: "${this.activeSubtitle}")...`
     );
+
+    const threads = String(config.stream.encodeThreads);
 
     const customInputOptions: string[] = [
       ...(seekSeconds > 0 ? ['-ss', String(seekSeconds)] : []),
@@ -338,9 +331,9 @@ export class WorkerGuildSession {
       '-reconnect_at_eof', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
-      '-probesize', '15M',
-      '-analyzeduration', '15M',
-      '-threads', '4',
+      '-probesize', '10M',
+      '-analyzeduration', '10M',
+      '-threads', threads,
     ];
 
     // Single unified filtergraph for video (scaling + subtitle rendering)
@@ -357,13 +350,19 @@ export class WorkerGuildSession {
       console.log(`[WorkerSession:${this.guildId}] Unified subtitle filter active (${this.activeSubtitle} at effective seek ${effectiveTime}s): ${this.activeSubtitlePath}`);
     }
 
+    // Widen the VBV buffer beyond the nominal bitrate (was == bitrate, i.e. a
+    // ~1s buffer) so brief CPU contention on the shared VPS doesn't force the
+    // encoder to visibly stall/drop under strict CBR. Adds a small amount of
+    // acceptable latency in exchange for a much smoother stream.
+    const vbvBufsizeKbps = Math.round(this.streamMaxBitrateKbps * 1.5);
+
     // Custom audio mapping + filtering: dialogue matrix + volume boost
     const customFfmpegFlags: string[] = [
-      '-threads', '4',
-      '-filter_threads', '4',
+      '-threads', threads,
+      '-filter_threads', threads,
       '-b:v', `${this.streamBitrateKbps}k`,
-      '-maxrate:v', `${this.streamBitrateKbps}k`,
-      '-bufsize:v', `${this.streamBitrateKbps}k`,
+      '-maxrate:v', `${this.streamMaxBitrateKbps}k`,
+      '-bufsize:v', `${vbvBufsizeKbps}k`,
       '-map', '0:v:0',
       '-map', `0:a:${this.activeAudioStreamIndex}?`,
       '-af', 'volume=1.4,pan=stereo|c0=c2+0.6*c0+0.6*c4|c1=c2+0.6*c1+0.6*c5',
@@ -373,6 +372,10 @@ export class WorkerGuildSession {
       customFfmpegFlags.push('-vf', vfFilters.join(','));
     }
 
+    // Build and prime the new ffmpeg process BEFORE touching the currently
+    // playing one. Connecting to and probing the CDN source can take a
+    // couple of seconds; doing that while the old stream keeps playing means
+    // viewers only see a gap for the final swap, not the whole reconnect.
     const { command, output } = prepareStream(this.resolvedCdnUrl, {
       encoder,
       width: this.streamWidth,
@@ -387,16 +390,49 @@ export class WorkerGuildSession {
       customFfmpegFlags,
     });
 
+    try {
+      // Synchronize: wait until output has header bytes ready before demuxing
+      await new Promise<void>((resolve, reject) => {
+        command.once('error', reject);
+        if (output.readableLength > 0) return resolve();
+        output.once('readable', () => resolve());
+      });
+    } catch (err) {
+      console.warn(`[WorkerSession:${this.guildId}] New segment failed to prime, keeping previous stream:`, (err as Error).message);
+      try { command.kill('SIGKILL'); } catch {}
+      return;
+    }
+
+    // A newer request already superseded this one while we were priming;
+    // discard this primed-but-stale process instead of swapping it in.
+    if (generation !== this.segmentGeneration) {
+      console.warn(`[WorkerSession:${this.guildId}] Superseded by a newer segment request, discarding primed ffmpeg process.`);
+      try { command.kill('SIGKILL'); } catch {}
+      return;
+    }
+
+    // Now swap: terminate the previous ffmpeg process and packetizer, then
+    // hand the primed, ready-to-go output to the Go-Live streamer.
+    if (this.activeFfmpegCommand) {
+      try {
+        this.activeFfmpegCommand.kill('SIGKILL');
+      } catch {}
+    }
+
+    try {
+      this.streamer.stopStream();
+    } catch {}
+
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+      this.progressInterval = null;
+    }
+
     this.activeFfmpegCommand = command;
     this.playbackStatus = 'PLAYING';
     this.isStreaming = true;
 
-    // Synchronize: wait until output has header bytes ready before demuxing
-    await new Promise<void>((resolve, reject) => {
-      command.once('error', reject);
-      if (output.readableLength > 0) return resolve();
-      output.once('readable', () => resolve());
-    });
+    console.log(`[WorkerSession:${this.guildId}] Swapping in new stream segment.`);
 
     // Track playback clock
     this.currentPosition = seekSeconds;
@@ -712,6 +748,11 @@ export class WorkerGuildSession {
     this.isStreaming = false;
     this.isVoiceConnected = false;
     this.playbackStatus = 'IDLE';
+
+    // Invalidate any in-flight startStreamSegment() that is still priming a
+    // new ffmpeg process, so it discards itself instead of swapping in after
+    // we've already stopped.
+    this.segmentGeneration++;
 
     if (this.intermissionTimer) {
       clearInterval(this.intermissionTimer);

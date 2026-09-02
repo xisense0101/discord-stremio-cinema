@@ -5,6 +5,12 @@ export class SessionManager {
   private sessions: Map<string, WorkerGuildSession> = new Map();
   public readonly streamer: Streamer;
 
+  // The underlying Streamer wraps a single Discord account/voice connection,
+  // so only one guild session can actually be "live" at a time. Track it so
+  // we can cleanly tear down the previous session instead of letting its
+  // ffmpeg process leak and keep burning CPU in the background.
+  private activeGuildId: string | null = null;
+
   constructor(streamer: Streamer) {
     this.streamer = streamer;
   }
@@ -18,6 +24,34 @@ export class SessionManager {
     return session;
   }
 
+  /**
+   * Must be called before a session starts streaming. Stops (and fully
+   * releases the ffmpeg process of) any other guild's session that still
+   * thinks it's active, since they all share one Streamer/voice connection.
+   */
+  async claimActive(guildId: string): Promise<void> {
+    if (this.activeGuildId && this.activeGuildId !== guildId) {
+      const previous = this.sessions.get(this.activeGuildId);
+      if (previous && previous.isStreaming) {
+        console.warn(
+          `[SessionManager] Guild ${guildId} is taking over the streamer from ${this.activeGuildId}; stopping previous session to avoid an orphaned ffmpeg process.`
+        );
+        try {
+          await previous.stop();
+        } catch (err) {
+          console.warn(`[SessionManager] Error stopping previous session ${this.activeGuildId}:`, err);
+        }
+      }
+    }
+    this.activeGuildId = guildId;
+  }
+
+  clearActive(guildId: string): void {
+    if (this.activeGuildId === guildId) {
+      this.activeGuildId = null;
+    }
+  }
+
   getSession(guildId: string): WorkerGuildSession | undefined {
     return this.sessions.get(guildId);
   }
@@ -28,6 +62,7 @@ export class SessionManager {
       await session.stop();
       this.sessions.delete(guildId);
     }
+    this.clearActive(guildId);
   }
 
   async stopAll(): Promise<void> {
@@ -39,6 +74,7 @@ export class SessionManager {
       }
     }
     this.sessions.clear();
+    this.activeGuildId = null;
   }
 
   getActiveCount(): number {

@@ -20,15 +20,28 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/discord-stremio-worker
 
 jobs:
-  build-and-push:
-    name: 🐳 Build & Push Multi-Arch Docker Image
-    runs-on: ubuntu-latest
+  # Each architecture builds NATIVELY on its own runner instead of cross-
+  # compiling under QEMU emulation. This repo builds several native Node
+  # addons (node-datachannel, zeromq, sharp) that need node-gyp/C++
+  # compilation - doing that under QEMU's instruction emulation is slow and
+  # occasionally flaky. Since this repo is public, GitHub's ubuntu-24.04-arm
+  # hosted runner is free, so there's no upside left to emulating arm64.
+  build:
+    name: 🐳 Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
-
-      - name: 🛠️ Set up QEMU (ARM64 & AMD64)
-        uses: docker/setup-qemu-action@v3
 
       - name: 🛠️ Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -40,7 +53,64 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🏷️ Extract Metadata (Tags, Labels)
+      - name: 🏷️ Extract Metadata (Labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: 🚀 Build & Push by Digest
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./infra/Dockerfile.worker
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=worker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=worker-${{ matrix.arch }}
+
+      - name: 📝 Export Digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: 📤 Upload Digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Combines the two single-arch images (built above, pushed by digest only)
+  # into one multi-arch manifest list under :latest / :sha-<short>, per
+  # Docker's documented "distribute build across multiple runners" pattern.
+  merge:
+    name: 🔗 Merge Multi-Arch Manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Download Digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: 🛠️ Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Extract Metadata (Tags)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -49,25 +119,38 @@ jobs:
             type=raw,value=latest
             type=sha,format=short
 
-      - name: 🚀 Build & Push Multi-Arch Container Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./infra/Dockerfile.worker
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: 🔗 Create & Push Manifest List
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: 🔍 Inspect Final Image
+        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
   deploy-to-oracle:
     name: 🌐 Deploy Sandboxed Worker on Oracle VPS
-    needs: build-and-push
+    needs: merge
     runs-on: ubuntu-latest
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
+
+      # infra/docker-compose.worker.yml (in-repo) is the single source of
+      # truth for the deployed container's resource limits/env - copy it
+      # verbatim instead of duplicating it here, so the two can't drift.
+      - name: 📤 Copy docker-compose.worker.yml to Oracle VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.OCI_HOST }}
+          username: ${{ secrets.OCI_USERNAME }}
+          key: ${{ secrets.OCI_SSH_KEY }}
+          port: ${{ secrets.OCI_SSH_PORT || 22 }}
+          source: 'infra/docker-compose.worker.yml'
+          target: '/opt/streamer'
+          strip_components: 1
+          rm: false
 
       - name: 🚀 Deploy via SSH to Oracle VPS
         uses: appleboy/ssh-action@v1.0.3
@@ -91,63 +174,40 @@ jobs:
               echo "Creating initial .env template..."
               touch /opt/streamer/.env
             fi
+            mv /opt/streamer/docker-compose.worker.yml /opt/streamer/docker-compose.yml
 
-            # 3. Copy Docker Compose file
-            cat << 'COMPOSE_EOF' > /opt/streamer/docker-compose.yml
-            version: '3.8'
-
-            services:
-              stream-worker:
-                image: ghcr.io/${{ github.repository_owner }}/discord-stremio-worker:latest
-                container_name: stremio_stream_worker
-                restart: unless-stopped
-                deploy:
-                  resources:
-                    limits:
-                      cpus: '2.00'
-                      memory: 2560M
-                    reservations:
-                      cpus: '1.00'
-                      memory: 1536M
-                mem_limit: 2560m
-                mem_reservation: 1536m
-                cpus: 2.0
-                ipc: host
-                tmpfs:
-                  - /tmp:size=256M,mode=1777
-                ports:
-                  - "4001:4001"
-                environment:
-                  - NODE_ENV=production
-                  - NODE_OPTIONS=--max-old-space-size=1536
-                  - WORKER_PORT=4001
-                  - PORT=4001
-                  - PUPPETEER_HEADLESS=true
-                volumes:
-                  - /opt/streamer/.env:/app/.env
-                  - /opt/streamer/data:/app/data
-            COMPOSE_EOF
-
-            # 4. Pull latest image from GHCR
+            # 3. Pull latest image from GHCR
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            export WORKER_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
             docker compose -f /opt/streamer/docker-compose.yml pull
 
-            # 5. Zero-downtime container restart
+            # 4. Zero-downtime container restart
             docker compose -f /opt/streamer/docker-compose.yml up -d --remove-orphans
 
-            # 6. Verify health check
+            # 5. Verify health check
             echo "Waiting for Stream Worker container to initialize..."
             sleep 6
+            HEALTHY=0
             for i in {1..10}; do
               if curl -s -f http://127.0.0.1:4001/health > /dev/null; then
                 echo "✅ Stream Worker is healthy and listening on Port 4001!"
                 docker ps --filter "name=stremio_stream_worker"
-                exit 0
+                HEALTHY=1
+                break
               fi
               echo "Waiting for healthcheck ($i/10)..."
               sleep 2
             done
 
-            echo "❌ Worker failed healthcheck after 26s"
-            docker logs --tail 50 stremio_stream_worker
-            exit 1
+            if [ "$HEALTHY" -ne 1 ]; then
+              echo "❌ Worker failed healthcheck after 26s"
+              docker logs --tail 50 stremio_stream_worker
+              exit 1
+            fi
+
+            # 6. Clean up old images from THIS project only (scoped by the
+            # OCI source label docker/metadata-action stamps on every build).
+            # The VPS is shared with other services (Judge0, Postgres, etc) -
+            # never run a bare `docker system prune` here.
+            echo "🧹 Pruning old discord-stremio-worker images..."
+            docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/${{ github.repository }}" || true

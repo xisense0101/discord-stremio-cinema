@@ -266,4 +266,3 @@ runBenchmarkSuite().catch((err) => {
   console.error('Benchmark suite error:', err);
   process.exit(1);
 });
-process.exit(0);

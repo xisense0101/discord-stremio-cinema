@@ -22,10 +22,17 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
     }
   }
 
+  const ipcSecret = config.server.workerIpcSecret;
+  if (!ipcSecret) {
+    console.warn(
+      '[IPC Server] WORKER_IPC_SECRET is not set - the worker is accepting UNAUTHENTICATED commands on 0.0.0.0. Set WORKER_IPC_SECRET in .env for any non-local deployment.'
+    );
+  }
+
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
 
-    // Health check endpoint
+    // Health check endpoint (unauthenticated: hit by Docker HEALTHCHECK/curl)
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200);
       res.end(
@@ -36,6 +43,12 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
           metrics: getSystemMetrics(),
         })
       );
+      return;
+    }
+
+    if (ipcSecret && req.headers['x-worker-secret'] !== ipcSecret) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ success: false, error: 'Unauthorized' }));
       return;
     }
 
@@ -158,7 +171,12 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
           const cmd = JSON.parse(body);
           const { id, action, guildId, voiceChannelId, textChannelId, payload } = cmd;
 
-          console.log(`[IPC] Received action "${action}" for guild ${guildId}`);
+          // GET_STATE is polled every 20s per active guild by the controller's
+          // live ticker - logging it at info level drowns out real signal
+          // (ffmpeg errors/restarts) when diagnosing stream issues.
+          if (action !== 'GET_STATE') {
+            console.log(`[IPC] Received action "${action}" for guild ${guildId}`);
+          }
 
           let state = null;
           const session = sessionManager.getOrCreateSession(guildId);
@@ -172,6 +190,11 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
               const initialTime = payload?.initialTime || 0;
               const quality = payload?.quality || '1080p';
               const targetVc = voiceChannelId || payload?.voiceChannelId;
+
+              // The shared Streamer can only carry one live voice/stream connection.
+              // Stop any other guild's session first so its ffmpeg process doesn't
+              // leak in the background while this one takes over.
+              await sessionManager.claimActive(guildId);
 
               state = await session.openMedia({
                 streamUrl,
@@ -234,6 +257,7 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
               const targetVcId = payload?.voiceChannelId || voiceChannelId;
               if (targetGuildId && targetVcId) {
                 console.log(`[IPC] Switching Voice Channel to Guild: ${targetGuildId}, VC: ${targetVcId}`);
+                await sessionManager.claimActive(targetGuildId);
                 await safeJoinVoice(targetGuildId, targetVcId);
                 session.setVoiceChannel(targetVcId);
                 state = await session.getState();

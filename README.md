@@ -41,12 +41,13 @@ A production-grade Discord Movie & TV streaming platform and Web Cinema Controll
                                   │   Next.js 14 Web App   │
                                   │   (Port 3000 / Vercel) │
                                   └───────────┬────────────┘
-                                              │ HTTP / JSON
+                                              │ HTTP / JSON (+ x-worker-secret)
                                               ▼
 ┌────────────────────────┐         ┌────────────────────────┐
 │ Discord Controller Bot │◄───────►│  Stream Worker (4001)  │
-│      (Port 4000)       │   IPC   │  • FFmpeg Remuxer      │
-└────────────────────────┘         │  • Discord Go-Live     │
+│      (Port 4000)       │   IPC   │  • Direct CDN resolve  │
+└────────────────────────┘         │  • FFmpeg (x264 sw)    │
+                                   │  • Discord Go-Live     │
                                    │  • Token Manager       │
                                    └───────────┬────────────┘
                                                │ WebRTC
@@ -56,6 +57,11 @@ A production-grade Discord Movie & TV streaming platform and Web Cinema Controll
                                   │   (1080p 30fps Stream) │
                                   └────────────────────────┘
 ```
+
+One worker process wraps exactly one Discord streamer account, which can only
+be live in one voice channel at a time - so one worker = one concurrent
+stream. See `docs/architecture.md` for the full pipeline and what scaling to
+more concurrent streams actually requires.
 
 ---
 
@@ -117,8 +123,10 @@ pnpm start:web
 1. Import the repository in [Vercel](https://vercel.com).
 2. Set the **Root Directory** to `apps/web`.
 3. Add the following Environment Variables:
-   * `JWT_SECRET`: Any random secure string
+   * `JWT_SECRET`: Any random secure string (required - the app refuses to boot in production without it)
+   * `WEB_PASSWORD`: Your dashboard login password (required - same reason)
    * `WORKER_URL`: Public URL of your stream worker (via Cloudflare Tunnel or VPS domain)
+   * `WORKER_IPC_SECRET`: Must match the worker's `WORKER_IPC_SECRET` - the worker rejects unauthenticated commands
    * `DEFAULT_GUILD_ID`: `1543532988229488680`
    * `DEFAULT_VOICE_CHANNEL_ID`: `1543532988795461666`
 4. Click **Deploy**!

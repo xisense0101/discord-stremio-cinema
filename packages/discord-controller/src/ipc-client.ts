@@ -29,7 +29,10 @@ export class IPCClient {
       const workerUrl = `http://127.0.0.1:${config.server.workerPort}/ipc/command`;
       const res = await fetch(workerUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.server.workerIpcSecret ? { 'x-worker-secret': config.server.workerIpcSecret } : {}),
+        },
         body: JSON.stringify(cmd),
         signal: AbortSignal.timeout(30000),
       });
