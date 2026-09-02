@@ -10,24 +10,12 @@ export class AIOStreamsResolver {
     return url.replace(/\/+$/, '');
   }
 
-  /**
-   * Resolves streams straight from AIOStreams and returns them in the exact
-   * order AIOStreams provides - it already sorts/filters according to
-   * whatever the user configured in their AIOStreams manifest (quality,
-   * cached status, language, etc). We used to re-rank everything ourselves
-   * with a regex-based quality/language guesser; that duplicated logic
-   * AIOStreams already does properly, and its language classifier had a
-   * real bug (verified against a live "How to Train Your Dragon" release)
-   * where a bracketed multi-dub tag like "[Tam + Tel + Hin + Eng]" got
-   * misclassified as plain English and ranked identically to real
-   * English-only sources. Don't re-implement AIOStreams' job here.
-   */
   async resolveStreams(
     type: 'movie' | 'series',
     imdbId: string,
     season?: number,
     episode?: number,
-    _preferredQuality: string = '720p'
+    preferredQuality: string = '720p'
   ): Promise<MediaStream[]> {
     const id = type === 'series' && season && episode ? `${imdbId}:${season}:${episode}` : imdbId;
     const streams: MediaStream[] = [];
@@ -36,7 +24,7 @@ export class AIOStreamsResolver {
     try {
       const url = `${baseUrl}/stream/${type}/${id}.json`;
       console.log(`[AIOStreamsResolver] Fetching streams for ${type} ${id} from AIOStreams: ${url}`);
-
+      
       const res = await fetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' },
         signal: AbortSignal.timeout(15000),
@@ -59,21 +47,17 @@ export class AIOStreamsResolver {
       console.warn(`[AIOStreamsResolver] Resolve error:`, (err as Error).message);
     }
 
-    return streams;
+    return this.rankStreams(streams, preferredQuality);
   }
 
-  /**
-   * Extracts display metadata (quality/audio format/size) from an AIOStreams
-   * entry for the UI. Only filters out obviously unwatchable CAM/TS/Screener
-   * rips - does not re-order or re-score anything.
-   */
   private parseStream(raw: any): MediaStream | null {
     if (!raw.url) return null;
 
     const rawName = raw.name || 'AIOStreams';
     const rawTitle = raw.title || '';
     const filename = raw.behaviorHints?.filename || rawTitle || rawName;
-    const fullText = `${rawName} ${rawTitle} ${filename}`.toLowerCase();
+    const bingeGroup = raw.behaviorHints?.bingeGroup || '';
+    const fullText = `${rawName} ${rawTitle} ${filename} ${bingeGroup}`.toLowerCase();
 
     // Filter out CAM, TS, Telesync, Screener
     if (
@@ -87,7 +71,7 @@ export class AIOStreamsResolver {
       return null;
     }
 
-    // Parse Quality (display/filter metadata only)
+    // Parse Quality
     let quality: MediaStream['quality'] = 'other';
     if (/\b(4k|2160p|uhd|ultrahd)\b/i.test(fullText) || fullText.includes('2160p') || fullText.includes('4k')) {
       quality = '4k';
@@ -108,7 +92,7 @@ export class AIOStreamsResolver {
       }
     }
 
-    // Parse Audio format (channel layout label only, not a language guess)
+    // Parse Audio
     let audio = 'Stereo';
     if (fullText.includes('atmos') || fullText.includes('truehd') || fullText.includes('dts-hd') || fullText.includes('7.1')) {
       audio = 'Surround 7.1 (Lossless)';
@@ -116,6 +100,54 @@ export class AIOStreamsResolver {
       audio = 'Dolby 5.1 Surround';
     } else if (fullText.includes('aac') || fullText.includes('mp4a') || fullText.includes('stereo') || fullText.includes('2.0')) {
       audio = 'AAC Stereo';
+    }
+
+    // Parse Language Score & Tag
+    const isKorean = /\b(korean|kor|gisaengchung|hangeul)\b/i.test(fullText) || bingeGroup.includes('Korean');
+    const isJapanese = /\b(japanese|jpn|anime|dual[- ]?audio)\b/i.test(fullText) || bingeGroup.includes('Japanese');
+    const isMulti = /\b(multi|multisubs|dual[- ]?audio|ita[.-]eng|eng[.-]ita|fre[.-]eng|eng[.-]fre|hindi[.-]english|english[.-]hindi)\b/i.test(fullText);
+    const isExplicitEnglish = /\b(english|eng|en)\b/i.test(fullText) || bingeGroup.includes('English');
+    const isFrench = /\b(french|truefrench|vff|vf2|vfi|vof|vostfr|genemige)\b/i.test(fullText) || (bingeGroup.includes('French') && !bingeGroup.includes('English'));
+    const isItalian = (/\b(italian|ita|corsaronero)\b/i.test(fullText) || bingeGroup.includes('Italian')) && !isExplicitEnglish;
+    const isRussian = (/\b(russian|rus|nnnb)\b/i.test(fullText) || /[а-яА-ЯёЁ]/.test(fullText) || bingeGroup.includes('Russian')) && !isExplicitEnglish;
+    const isPortuguese = (/\b(portuguese|dublado|pt[- ]?br)\b/i.test(fullText) || bingeGroup.includes('Portuguese')) && !isExplicitEnglish;
+    const isSpanish = (/\b(spanish|castellano|latino|espanol|esp)\b/i.test(fullText) || bingeGroup.includes('Spanish')) && !isExplicitEnglish;
+    const isGerman = (/\b(german|deutsch|ger)\b/i.test(fullText) || bingeGroup.includes('German')) && !isExplicitEnglish;
+    const isHindi = (/\b(hindi|hin)\b/i.test(fullText) || bingeGroup.includes('Hindi')) && !isExplicitEnglish;
+
+    let languageLabel = 'English (Original)';
+    let languageScore = 100;
+
+    if (isKorean) {
+      languageLabel = isMulti || isExplicitEnglish ? 'Korean (Original / Multi)' : 'Korean (Original)';
+      languageScore = 100;
+    } else if (isJapanese) {
+      languageLabel = isMulti || isExplicitEnglish ? 'Japanese (Original / Multi)' : 'Japanese (Original)';
+      languageScore = 100;
+    } else if (isMulti || (isExplicitEnglish && (isFrench || isItalian || isSpanish || isGerman || isRussian || isHindi))) {
+      languageLabel = 'Multi-Audio (ENG+)';
+      languageScore = 90;
+    } else if (isFrench) {
+      languageLabel = 'French (VFF/VF)';
+      languageScore = 10;
+    } else if (isItalian) {
+      languageLabel = 'Italian';
+      languageScore = 10;
+    } else if (isRussian) {
+      languageLabel = 'Russian';
+      languageScore = 10;
+    } else if (isPortuguese) {
+      languageLabel = 'Portuguese (Dublado)';
+      languageScore = 10;
+    } else if (isSpanish) {
+      languageLabel = 'Spanish (Latino/Castellano)';
+      languageScore = 10;
+    } else if (isGerman) {
+      languageLabel = 'German';
+      languageScore = 10;
+    } else if (isHindi) {
+      languageLabel = 'Hindi';
+      languageScore = 10;
     }
 
     const displayTitle = filename.replace(/\.[a-zA-Z0-9]+$/, '') || rawName;
@@ -131,8 +163,48 @@ export class AIOStreamsResolver {
       audio,
       url: raw.url,
       sizeBytes,
-      details: audio,
-    };
+      details: `${languageLabel} • ${audio}`,
+      languageScore,
+    } as MediaStream & { languageScore?: number };
+  }
+
+  private rankStreams(streams: MediaStream[], preferredQuality: string = '720p'): MediaStream[] {
+    const pref = preferredQuality.toLowerCase().trim();
+    let qualityPriority: Record<string, number> = { '720p': 1, '1080p': 2, '480p': 3, '4k': 4, 'other': 5 };
+
+    if (pref === '4k' || pref === '2160p' || pref === 'uhd') {
+      qualityPriority = { '4k': 1, '1080p': 2, '720p': 3, '480p': 4, 'other': 5 };
+    } else if (pref === '2k' || pref === '1440p' || pref === 'qhd') {
+      qualityPriority = { '4k': 1, '1080p': 2, '720p': 3, '480p': 4, 'other': 5 };
+    } else if (pref === '1080p' || pref === 'fhd') {
+      qualityPriority = { '1080p': 1, '720p': 2, '480p': 3, '4k': 4, 'other': 5 };
+    } else if (pref === '720p' || pref === 'hd') {
+      qualityPriority = { '720p': 1, '1080p': 2, '480p': 3, '4k': 4, 'other': 5 };
+    } else if (pref === '480p' || pref === 'sd') {
+      qualityPriority = { '480p': 1, '720p': 2, '1080p': 3, '4k': 4, 'other': 5 };
+    }
+
+    return streams.sort((a: any, b: any) => {
+      // 1. Language Score Priority (English & Multi-Audio First)
+      const langA = a.languageScore || 50;
+      const langB = b.languageScore || 50;
+      if (langA !== langB) return langB - langA;
+
+      // 2. Preferred Quality Priority
+      const rankA = qualityPriority[a.quality] || 99;
+      const rankB = qualityPriority[b.quality] || 99;
+      if (rankA !== rankB) return rankA - rankB;
+
+      // 3. Optimal File Size Priority (~1.0 GB to 10.0 GB for smooth streaming)
+      const sizeA = (a.sizeBytes || 0) / (1024 * 1024 * 1024);
+      const sizeB = (b.sizeBytes || 0) / (1024 * 1024 * 1024);
+      const isIdealA = sizeA >= 0.8 && sizeA <= 12.0;
+      const isIdealB = sizeB >= 0.8 && sizeB <= 12.0;
+      if (isIdealA && !isIdealB) return -1;
+      if (!isIdealA && isIdealB) return 1;
+
+      return (a.sizeBytes || 0) - (b.sizeBytes || 0);
+    });
   }
 }
 

@@ -45,12 +45,9 @@ export interface AudioTrackInfo {
   audioStreamIndex: number;
   rawStreamIndex: number;
   language: string;
-  rawLanguage: string;
   label: string;
   codec: string;
   channels: number;
   channelLayout: string;
   title?: string;
-  /** True when the container's own metadata (ffprobe disposition.default) flags this as the default track */
-  isDefault: boolean;
 }

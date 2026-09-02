@@ -115,7 +115,6 @@ export async function probeEmbeddedAudioTracks(
       const channelLayoutStr = formatChannelLayout(channels, s.channel_layout);
       const codec = (s.codec_name || 'aac').toUpperCase();
       const customTitle = s.tags?.title || s.tags?.handler_name;
-      const isDefault = s.disposition?.default === 1;
 
       let label = `${langName} (${channelLayoutStr} • ${codec})`;
       if (customTitle && !customTitle.toLowerCase().includes(rawLang)) {
@@ -127,13 +126,11 @@ export async function probeEmbeddedAudioTracks(
         audioStreamIndex: audioIndex,
         rawStreamIndex: s.index ?? audioIndex,
         language: langName,
-        rawLanguage: rawLang,
         label,
         codec,
         channels,
         channelLayout: channelLayoutStr,
         title: customTitle,
-        isDefault,
       };
     });
 
@@ -150,11 +147,9 @@ function getDefaultAudioTrack(): AudioTrackInfo {
     audioStreamIndex: 0,
     rawStreamIndex: 0,
     language: 'English',
-    rawLanguage: 'eng',
     label: 'Default Audio (Stereo)',
     codec: 'AAC',
     channels: 2,
     channelLayout: 'Stereo',
-    isDefault: true,
   };
 }

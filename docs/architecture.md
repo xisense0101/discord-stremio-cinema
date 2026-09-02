@@ -49,4 +49,4 @@ The Discord Stremio Player platform separates a lightweight control plane from a
    - Transmits the encoded output over Discord Go-Live WebRTC using `@dank074/discord-video-stream`.
    - One worker process wraps exactly one Discord account/voice connection, so only one guild can be actively streaming at a time per worker. Scaling to more concurrent streams requires additional (worker process, Discord account) pairs, not just more CPU.
 
-> **Note:** `packages/playback` (headless Chromium + Stremio web player, via `puppeteer-stream`) exists in the repo but is **not** part of the production playback path above - it's an earlier/alternate approach that nothing currently invokes.
+> **Note:** `packages/playback` (headless Chromium + Stremio web player, via `puppeteer-stream`) exists in the repo and is exercised by `scripts/benchmark-suite.ts`, but it is **not** part of the production playback path above - it's an earlier/alternate approach kept for benchmarking only.
