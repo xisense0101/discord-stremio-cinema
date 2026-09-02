@@ -2,6 +2,7 @@ import http from 'http';
 import { SessionManager } from './session-manager.js';
 import { TokenManager } from './token-manager.js';
 import { undeafenStreamer } from './session.js';
+import { getStoredSettings, saveStoredSettings } from './settings-store.js';
 import { getSystemMetrics } from '@discord-stremio/diagnostics';
 import config from '@discord-stremio/config';
 
@@ -64,6 +65,38 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
         res.writeHead(500);
         res.end(JSON.stringify({ success: false, error: (err as Error).message }));
       }
+      return;
+    }
+
+    // User Settings endpoints (selected guild/VC, quality, etc). Persisted
+    // here - on the worker, a long-running process with real durable disk -
+    // rather than in the Next.js web app, which typically runs as ephemeral
+    // serverless functions (e.g. on Vercel) with no durable/shared
+    // filesystem. Writing settings there would silently fail to survive
+    // between invocations, which is what made a manually-selected voice
+    // channel appear to "revert" back to the default guild/VC a couple of
+    // seconds later (the web app's periodic settings poll would read back
+    // the never-actually-persisted default).
+    if (req.method === 'GET' && req.url === '/api/settings') {
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, settings: getStoredSettings() }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/settings') {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        try {
+          const updates = JSON.parse(body || '{}');
+          const settings = saveStoredSettings(updates);
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, settings }));
+        } catch (err) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ success: false, error: (err as Error).message }));
+        }
+      });
       return;
     }
 

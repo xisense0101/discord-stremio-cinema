@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Valid mediaItem with imdbId required' }, { status: 400 });
     }
 
-    const settings = getStoredSettings();
+    const settings = await getStoredSettings();
     const targetQuality = quality || settings.defaultQuality || '720p';
 
     let selectedStream = stream;
@@ -89,7 +89,7 @@ export async function PATCH(req: NextRequest) {
       guildId = DEFAULT_GUILD_ID,
     } = await req.json();
 
-    const settings = getStoredSettings();
+    const settings = await getStoredSettings();
 
     // Reorder
     if (fromIndex !== undefined && toIndex !== undefined) {

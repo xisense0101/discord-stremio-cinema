@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-client';
+import { WORKER_URL, workerAuthHeaders } from '@/lib/worker-client';
 
 export async function GET() {
   try {
     const res = await fetch(`${WORKER_URL}/api/token/health`, {
+      headers: workerAuthHeaders(),
       cache: 'no-store',
       signal: AbortSignal.timeout(3000),
     });
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const res = await fetch(`${WORKER_URL}/api/token/update`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });

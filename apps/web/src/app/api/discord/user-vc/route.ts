@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-client';
+import { WORKER_URL, workerAuthHeaders } from '@/lib/worker-client';
 
 export async function GET(req: NextRequest) {
   try {
@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'userId is required' }, { status: 400 });
     }
 
-    const res = await fetch(`${WORKER_URL}/api/discord/user-vc?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
+    const res = await fetch(`${WORKER_URL}/api/discord/user-vc?userId=${encodeURIComponent(userId)}`, { headers: workerAuthHeaders(), cache: 'no-store' });
     const data = await res.json();
     return NextResponse.json(data);
   } catch (err) {

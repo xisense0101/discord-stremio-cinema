@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
       requestedBy = 'senzu (Smart Marathon Binge)',
     } = await req.json();
 
-    const settings = getStoredSettings();
+    const settings = await getStoredSettings();
     const targetQuality = quality || settings.defaultQuality || '1080p';
 
     const movies = await fetchMoviesCatalog(genre);

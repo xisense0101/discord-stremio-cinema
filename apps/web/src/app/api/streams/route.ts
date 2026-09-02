@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'imdbId query param is required' }, { status: 400 });
     }
 
-    const settings = getStoredSettings();
+    const settings = await getStoredSettings();
     const preferredQuality = settings.defaultQuality || '720p';
 
     console.log(`[API:Streams] Resolving all cached debrid streams for ${type} ${imdbId} (Preferred: ${preferredQuality})...`);

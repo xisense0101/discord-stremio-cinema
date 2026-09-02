@@ -18,8 +18,11 @@ export async function POST(req: NextRequest) {
       voiceChannelId
     );
 
-    // Persist this active choice to file settings so future plays and queues target this channel
-    saveStoredSettings({
+    // Persist this active choice so future plays and queues target this channel.
+    // Awaited so the write has actually completed (on the worker's durable
+    // disk, not this app's own ephemeral filesystem) before this response
+    // returns - the UI polls /api/settings right after this call resolves.
+    await saveStoredSettings({
       selectedGuildId: guildId,
       selectedVoiceChannelId: voiceChannelId,
     });

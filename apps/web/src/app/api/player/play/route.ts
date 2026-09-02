@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Load active settings from file store
-    const settings = getStoredSettings();
+    const settings = await getStoredSettings();
     guildId = guildId || settings.selectedGuildId || DEFAULT_GUILD_ID;
     voiceChannelId = voiceChannelId || settings.selectedVoiceChannelId || DEFAULT_VOICE_CHANNEL_ID;
     // Always fall back to user's saved defaultQuality if quality is not explicitly passed

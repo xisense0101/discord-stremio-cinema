@@ -28,23 +28,14 @@ export default function CinemaDashboard() {
   // Fetch live state & token health & settings
   const fetchState = useCallback(async () => {
     try {
-      // 1. Fetch player state
-      const res = await fetch('/api/player/state');
-      if (res.ok) {
-        const data = await res.json();
-        setPlayerState(data.state);
-        setQueueItems(data.queue || []);
-        setWorkerConnected(data.workerConnected !== false);
-      }
-
-      // 2. Fetch token health
-      const tokenRes = await fetch('/api/token');
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        setTokenHealth(tokenData);
-      }
-
-      // 3. Fetch active settings for voice channel and default quality info
+      // 1. Fetch active settings FIRST so the player-state fetch below can
+      // target the currently-selected guild, not whatever was selected on
+      // the previous poll (or the hardcoded default on first load). Player
+      // state is guild-scoped on the worker (one WorkerGuildSession per
+      // guild) - fetching it without a guildId falls back to the app's
+      // hardcoded DEFAULT_GUILD_ID, which used to make the remote silently
+      // show/control the wrong server's session after switching VCs.
+      let currentGuildId = activeVoiceInfo.guildId;
       const settingsRes = await fetch('/api/settings');
       if (settingsRes.ok) {
         const settingsData = await settingsRes.json();
@@ -52,16 +43,34 @@ export default function CinemaDashboard() {
           if (settingsData.settings.defaultQuality) {
             setDefaultQuality(settingsData.settings.defaultQuality);
           }
+          currentGuildId = settingsData.settings.selectedGuildId;
           setActiveVoiceInfo({
             guildId: settingsData.settings.selectedGuildId,
             vcId: settingsData.settings.selectedVoiceChannelId,
           });
         }
       }
+
+      // 2. Fetch player state for that guild
+      const stateUrl = currentGuildId ? `/api/player/state?guildId=${encodeURIComponent(currentGuildId)}` : '/api/player/state';
+      const res = await fetch(stateUrl);
+      if (res.ok) {
+        const data = await res.json();
+        setPlayerState(data.state);
+        setQueueItems(data.queue || []);
+        setWorkerConnected(data.workerConnected !== false);
+      }
+
+      // 3. Fetch token health
+      const tokenRes = await fetch('/api/token');
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        setTokenHealth(tokenData);
+      }
     } catch (err) {
       console.warn('State sync notice:', err);
     }
-  }, []);
+  }, [activeVoiceInfo.guildId]);
 
   // Real-time polling loop
   useEffect(() => {
@@ -77,7 +86,7 @@ export default function CinemaDashboard() {
       const res = await fetch('/api/player/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, payload }),
+        body: JSON.stringify({ action, payload, guildId: activeVoiceInfo.guildId }),
       });
       const data = await res.json();
       if (data.state) {
