@@ -28,7 +28,6 @@
     "dev:worker": "pnpm --filter @discord-stremio/stream-worker dev",
     "dev:web": "pnpm --filter @discord-stremio/web dev",
     "build:web": "pnpm --filter @discord-stremio/web build",
-    "test": "npx tsx scripts/benchmark-suite.ts",
     "smoke-test": "bash scripts/smoke-test.sh",
     "diagnose": "bash scripts/diagnose.sh"
   },
