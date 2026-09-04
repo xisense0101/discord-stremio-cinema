@@ -63,6 +63,25 @@ function formatChannelLayout(channels: number, layout?: string): string {
   return `${channels} Channels`;
 }
 
+/** Video characteristics of the source file, read from the same probe as the audio tracks. */
+export interface SourceVideoInfo {
+  /** Native frame rate of the source, e.g. 23.976 for most film releases */
+  fps?: number;
+  width?: number;
+  height?: number;
+  codec?: string;
+}
+
+/** Parses ffprobe's rational frame-rate strings ("24000/1001") into a number. */
+function parseFrameRate(value?: string): number | undefined {
+  if (!value) return undefined;
+  const [num, den] = value.split('/').map(Number);
+  if (!num || !den) return undefined;
+  const fps = num / den;
+  if (!Number.isFinite(fps) || fps <= 0 || fps > 480) return undefined;
+  return Math.round(fps * 1000) / 1000;
+}
+
 /**
  * Fast probe of embedded audio streams from a media URL using ffprobe
  */
@@ -70,6 +89,20 @@ export async function probeEmbeddedAudioTracks(
   streamUrl: string,
   timeoutMs: number = 5000
 ): Promise<AudioTrackInfo[]> {
+  return (await probeSourceMedia(streamUrl, timeoutMs)).audioTracks;
+}
+
+/**
+ * Probes the source's audio tracks AND its video characteristics in a single
+ * ffprobe pass. These are deliberately fetched together rather than by two
+ * separate calls: the debrid CDN links this app plays only tolerate one
+ * connection at a time, so every extra probe is both another connection and
+ * another few seconds of start-up latency.
+ */
+export async function probeSourceMedia(
+  streamUrl: string,
+  timeoutMs: number = 5000
+): Promise<{ audioTracks: AudioTrackInfo[]; video: SourceVideoInfo | null }> {
   try {
     const { spawn } = await import('child_process');
 
@@ -77,7 +110,6 @@ export async function probeEmbeddedAudioTracks(
       '-v', 'quiet',
       '-print_format', 'json',
       '-show_streams',
-      '-select_streams', 'a',
       '-probesize', '5000000',
       '-analyzeduration', '3000000',
       '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n',
@@ -98,14 +130,32 @@ export async function probeEmbeddedAudioTracks(
     ]);
 
     if (exitCode !== 0 || !stdout) {
-      return [getDefaultAudioTrack()];
+      return { audioTracks: [getDefaultAudioTrack()], video: null };
     }
 
     const data = JSON.parse(stdout);
-    const audioStreams = data.streams || [];
+    const allStreams: any[] = data.streams || [];
+
+    // Cover art is carried as a video stream with an attached_pic disposition;
+    // it is not the feature and must never be mistaken for it.
+    const videoStream = allStreams.find(
+      (s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1
+    );
+    const video: SourceVideoInfo | null = videoStream
+      ? {
+          fps: parseFrameRate(videoStream.avg_frame_rate) ?? parseFrameRate(videoStream.r_frame_rate),
+          width: videoStream.width,
+          height: videoStream.height,
+          codec: videoStream.codec_name,
+        }
+      : null;
+
+    // Filtered to audio BEFORE indexing: the index below is the audio-relative
+    // one that `-map 0:a:N` expects, not the container-absolute stream index.
+    const audioStreams = allStreams.filter((s) => s.codec_type === 'audio');
 
     if (audioStreams.length === 0) {
-      return [getDefaultAudioTrack()];
+      return { audioTracks: [getDefaultAudioTrack()], video };
     }
 
     const tracks: AudioTrackInfo[] = audioStreams.map((s: any, audioIndex: number) => {
@@ -137,10 +187,10 @@ export async function probeEmbeddedAudioTracks(
       };
     });
 
-    return tracks;
+    return { audioTracks: tracks, video };
   } catch (err) {
     console.warn('[AudioProbe] Error probing audio tracks:', (err as Error).message);
-    return [getDefaultAudioTrack()];
+    return { audioTracks: [getDefaultAudioTrack()], video: null };
   }
 }
 

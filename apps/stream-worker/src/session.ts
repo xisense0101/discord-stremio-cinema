@@ -7,6 +7,7 @@ import {
   probeEmbeddedSubtitles,
   extractEmbeddedSubtitle,
   probeEmbeddedAudioTracks,
+  probeSourceMedia,
   SubtitleTrackInfo,
   AudioTrackInfo,
 } from '@discord-stremio/metadata';
@@ -68,6 +69,8 @@ export class WorkerGuildSession {
   private resolvedCdnUrl: string = '';
   private currentPosition: number = 0;
   private currentImdbId?: string;
+  /** Frame rate actually sent to Discord - matched to the source, capped at config.stream.fps. */
+  private outputFps: number = config.stream.fps;
   private sourceRelease: string = '';
   private sourceQuality: string = '';
   private sourceSizeBytes: number = 0;
@@ -290,13 +293,29 @@ export class WorkerGuildSession {
     const probeTargetUrl = this.resolvedCdnUrl || streamUrlToUse;
 
     // 2. Run embedded subtitle discovery, embedded audio discovery, external subtitle fetching in parallel
-    const [rawExternalSubs, embeddedSubs, probedAudioTracks] = await Promise.all([
+    const [rawExternalSubs, embeddedSubs, probedMedia] = await Promise.all([
       options.imdbId
         ? fetchAvailableSubtitles(options.imdbId, options.type || 'movie').catch(() => [] as SubtitleTrackInfo[])
         : Promise.resolve([] as SubtitleTrackInfo[]),
       probeEmbeddedSubtitles(probeTargetUrl).catch(() => [] as SubtitleTrackInfo[]),
-      probeEmbeddedAudioTracks(probeTargetUrl, 5000).catch(() => [] as AudioTrackInfo[]),
+      probeSourceMedia(probeTargetUrl, 5000).catch(() => ({ audioTracks: [] as AudioTrackInfo[], video: null })),
     ]);
+    const probedAudioTracks = probedMedia.audioTracks;
+
+    // Match the output frame rate to the source instead of always forcing 30.
+    // Nearly every film release is 23.976fps, and resampling that to 30
+    // duplicates roughly one frame in five on an uneven cadence - visible as
+    // judder that reads as "stuttering" no matter how much CPU headroom the
+    // encoder has, while also making the encoder and the Discord packetizer
+    // do ~25% more work per second of video for nothing. Capped at the
+    // configured fps so a high-frame-rate source can't inflate the workload.
+    const sourceFps = probedMedia.video?.fps;
+    if (sourceFps && sourceFps >= 10) {
+      this.outputFps = Math.min(sourceFps, config.stream.fps);
+      console.log(`[WorkerSession:${this.guildId}] Source video: ${probedMedia.video?.width}x${probedMedia.video?.height} ${probedMedia.video?.codec} @ ${sourceFps}fps -> streaming at ${this.outputFps}fps`);
+    } else {
+      this.outputFps = config.stream.fps;
+    }
 
     // Load multi-language Audio Tracks & auto-select the intended default
     if (probedAudioTracks && probedAudioTracks.length > 0) {
@@ -531,6 +550,16 @@ export class WorkerGuildSession {
     const customFfmpegFlags: string[] = [
       '-threads', threads,
       '-filter_threads', threads,
+      // prepareStream() forces a keyframe every single second
+      // (`-force_key_frames expr:gte(t,n_forced*1)`). At these bitrates a 720p
+      // keyframe is an order of magnitude larger than a P-frame, so at 1s
+      // spacing keyframes eat a large share of the CBR budget - starving the
+      // P-frames in between and making the rate controller visibly pulse once
+      // a second - and each one arrives as a burst the packetizer has to push
+      // out at once. Stretching to 2s halves that overhead and hands the bits
+      // back to the frames actually being watched. Discord viewers still get a
+      // keyframe quickly enough to join and to recover from loss.
+      '-force_key_frames', 'expr:gte(t,n_forced*2)',
       '-b:v', `${this.streamBitrateKbps}k`,
       '-maxrate:v', `${this.streamMaxBitrateKbps}k`,
       '-bufsize:v', `${vbvBufsizeKbps}k`,
@@ -567,7 +596,7 @@ export class WorkerGuildSession {
       encoder,
       width: this.streamWidth,
       height: this.streamHeight,
-      frameRate: config.stream.fps,
+      frameRate: this.outputFps,
       bitrateVideo: this.streamBitrateKbps,
       bitrateVideoMax: this.streamMaxBitrateKbps,
       bitrateAudio: config.stream.audioBitrateKbps,
@@ -923,7 +952,7 @@ export class WorkerGuildSession {
       activeAudioTrack: this.activeAudioStreamIndex,
       volume: 1,
       muted: false,
-      fps: config.stream.fps,
+      fps: this.outputFps,
       resolution: this.qualityLabel,
       stallCount: 0,
       updatedAt: Date.now(),
