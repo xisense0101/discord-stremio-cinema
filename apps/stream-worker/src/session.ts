@@ -534,7 +534,25 @@ export class WorkerGuildSession {
       '-b:v', `${this.streamBitrateKbps}k`,
       '-maxrate:v', `${this.streamMaxBitrateKbps}k`,
       '-bufsize:v', `${vbvBufsizeKbps}k`,
+      // `-map` is CUMULATIVE, not last-wins. prepareStream() already emits
+      // its own `-map 0:v` and `-map 0:a:0?` before these flags, so simply
+      // adding our own maps on top produced FOUR mapped streams
+      // (video, audio, video, audio) - ffmpeg spun up two libx264 instances
+      // and two libopus instances and encoded everything TWICE, while the
+      // downstream demuxer read only the first video/audio pair and threw
+      // the duplicates away. Verified on the live VPS: that doubled encode
+      // was the bulk of the worker's CPU draw and pushed it into CFS
+      // throttling (65 throttle events in ~5 min), which is what the stream
+      // stutter actually was.
+      //
+      // Negative maps cancel the library's before we add our own, so the
+      // output carries exactly one video and one audio stream. Cancelling
+      // `0:v` (all video) rather than relying on `0:v:0` also drops embedded
+      // cover art, which many releases carry as a second video stream and
+      // which would otherwise be encoded as well.
+      '-map', '-0:v',
       '-map', '0:v:0',
+      '-map', '-0:a:0',
       '-map', `0:a:${this.activeAudioStreamIndex}?`,
       '-af', 'volume=1.4,pan=stereo|c0=c2+0.6*c0+0.6*c4|c1=c2+0.6*c1+0.6*c5',
     ];

@@ -175,6 +175,28 @@ export class AIOStreamsResolver {
     // else: no non-English language markers detected at all - keep the
     // default English (Original) / 100.
 
+    // Parse decode cost. The worker software-decodes every source on a
+    // shared 4-core VPS with no hardware acceleration, and codec choice
+    // dominates that cost: 10-bit HEVC costs several times more CPU per
+    // frame than 8-bit H.264 at the SAME resolution, and AV1 more still.
+    // Overshooting the CPU budget is what pushes the container into CFS
+    // throttling, which is what a viewer sees as stutter - so between two
+    // candidates that are otherwise equally good, the cheaper one to decode
+    // makes a materially smoother stream. Lower is cheaper.
+    const is10Bit = /\b(10.?bit|hi10p?)\b/i.test(fullText);
+    let decodeCost: number;
+    if (/\b(av1|aom|svt.?av1)\b/i.test(fullText)) {
+      decodeCost = 100;
+    } else if (/\b(hevc|x265|h\.?265)\b/i.test(fullText)) {
+      decodeCost = is10Bit ? 80 : 60;
+    } else if (/\bvp9\b/i.test(fullText)) {
+      decodeCost = 55;
+    } else if (/\b(avc|x264|h\.?264)\b/i.test(fullText)) {
+      decodeCost = is10Bit ? 40 : 0;
+    } else {
+      decodeCost = 20;
+    }
+
     const displayTitle = filename.replace(/\.[a-zA-Z0-9]+$/, '') || rawName;
 
     return {
@@ -190,7 +212,8 @@ export class AIOStreamsResolver {
       sizeBytes,
       details: `${languageLabel} • ${audio}`,
       languageScore,
-    } as MediaStream & { languageScore?: number };
+      decodeCost,
+    } as MediaStream & { languageScore?: number; decodeCost?: number };
   }
 
   private rankStreams(streams: MediaStream[], preferredQuality: string = '720p'): MediaStream[] {
@@ -220,7 +243,15 @@ export class AIOStreamsResolver {
       const rankB = qualityPriority[b.quality] || 99;
       if (rankA !== rankB) return rankA - rankB;
 
-      // 3. Optimal File Size Priority (~1.0 GB to 10.0 GB for smooth streaming)
+      // 3. Software-decode cost (see decodeCost in parseStream). Deliberately
+      // placed BELOW language and quality so it only ever breaks ties between
+      // candidates that are already equally good on both - it never pulls a
+      // worse-quality or worse-language release ahead.
+      const costA = a.decodeCost ?? 20;
+      const costB = b.decodeCost ?? 20;
+      if (costA !== costB) return costA - costB;
+
+      // 4. Optimal File Size Priority (~1.0 GB to 10.0 GB for smooth streaming)
       const sizeA = (a.sizeBytes || 0) / (1024 * 1024 * 1024);
       const sizeB = (b.sizeBytes || 0) / (1024 * 1024 * 1024);
       const isIdealA = sizeA >= 0.8 && sizeA <= 12.0;
