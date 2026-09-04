@@ -96,6 +96,22 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
             </span>
           </div>
           <h2 className="text-xl font-bold text-white mt-1.5 line-clamp-1">{state.title || 'Playing Stream'}</h2>
+          {state.sourceRelease && (
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] text-gray-500 font-mono line-clamp-1 max-w-md" title={state.sourceRelease}>
+                {state.sourceRelease}
+                {state.sourceSizeBytes ? ` • ${(state.sourceSizeBytes / (1024 * 1024 * 1024)).toFixed(2)} GB` : ''}
+              </span>
+              {state.qualityMismatch && (
+                <span
+                  className="text-[10px] uppercase font-semibold tracking-wide text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-full"
+                  title={`No reachable source matched the requested quality. Actual source: ${state.sourceQuality || 'unknown'}.`}
+                >
+                  Source is {state.sourceQuality || 'unknown'}, not {state.resolution}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Quick Stop Button */}

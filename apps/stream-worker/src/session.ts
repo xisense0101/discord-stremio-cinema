@@ -39,6 +39,23 @@ export function undeafenStreamer(streamer: Streamer, guildId: string, channelId:
   }
 }
 
+/**
+ * Maps a requested quality (in any of the accepted user-facing forms, e.g.
+ * "1080p", "fhd", "4k", "2160p", "2k"/"1440p" which has no distinct source
+ * tag and falls back to the next best real source tier) to the source
+ * `quality` tag used by the stream resolvers ('4k' | '1080p' | '720p' |
+ * '480p' | 'other'). Mirrors the tier-1 entry of the resolver's own
+ * `qualityPriority` table in aiostreams.ts/torbox.ts so "exact tier" here
+ * means the same thing it means there.
+ */
+function normalizeQualityTier(quality: string): string {
+  const q = (quality || '').toLowerCase().trim();
+  if (q === '4k' || q === '2160p' || q === 'uhd' || q === '2k' || q === '1440p' || q === 'qhd') return '4k';
+  if (q === '1080p' || q === 'fhd') return '1080p';
+  if (q === '480p' || q === 'sd') return '480p';
+  return '720p';
+}
+
 export class WorkerGuildSession {
   public readonly guildId: string;
   public voiceChannelId: string | null = null;
@@ -51,6 +68,10 @@ export class WorkerGuildSession {
   private resolvedCdnUrl: string = '';
   private currentPosition: number = 0;
   private currentImdbId?: string;
+  private sourceRelease: string = '';
+  private sourceQuality: string = '';
+  private sourceSizeBytes: number = 0;
+  private qualityMismatch: boolean = false;
   private duration: number = 7200;
   private playbackStatus: 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ENDED' | 'ERROR' | 'INTERMISSION' = 'IDLE';
   private intermissionRemaining: number = 0;
@@ -159,6 +180,10 @@ export class WorkerGuildSession {
     this.currentPosition = options.initialTime || 0;
     this.subtitleDelaySeconds = 0;
     this.playbackStatus = 'BUFFERING';
+    this.sourceRelease = '';
+    this.sourceQuality = '';
+    this.sourceSizeBytes = 0;
+    this.qualityMismatch = false;
 
     this.configureQuality(options.quality || '720p');
     console.log(`[WorkerSession:${this.guildId}] Opening media: "${this.currentTitle}" (Quality: ${this.qualityLabel})`);
@@ -177,9 +202,25 @@ export class WorkerGuildSession {
           options.quality || '720p'
         );
         if (streams && streams.length > 0) {
-          // Probe top candidate streams to find the first 100% playable direct CDN stream that is not a slate
+          // Probe candidate streams to find the first 100% playable direct
+          // CDN stream that is not a slate. Candidates matching the
+          // REQUESTED quality tier are probed first and exhausted before
+          // falling back to any other tier - the resolver's own ranking
+          // (rankStreams()) sorts by language score first, so a requested
+          // 720p run can otherwise land on a working 4K/1080p candidate
+          // that happens to rank ahead once the top 720p entries fail their
+          // probe. The encoder always scales its OUTPUT to the requested
+          // resolution regardless of source, but decoding a much larger
+          // source than intended wastes bandwidth/CPU and can reintroduce
+          // the exact lag this app has been tuned to avoid - so the quality
+          // tier actually being decoded matters, not just the output size.
+          const requestedQ = normalizeQualityTier(options.quality || '720p');
+          const exactTier = streams.filter((s) => normalizeQualityTier(s.quality) === requestedQ);
+          const otherTiers = streams.filter((s) => normalizeQualityTier(s.quality) !== requestedQ);
+          const probeOrder = [...exactTier, ...otherTiers].slice(0, 12);
+
           let foundWorking = false;
-          for (const cand of streams.slice(0, 10)) {
+          for (const cand of probeOrder) {
             try {
               const res = await fetch(cand.url, {
                 method: 'HEAD',
@@ -189,8 +230,14 @@ export class WorkerGuildSession {
               });
               if (res.url && !res.url.includes('slate.elfhosted.com') && res.status < 400) {
                 streamUrlToUse = res.url;
-                this.currentTitle = options.title || cand.title;
-                console.log(`[WorkerSession:${this.guildId}] Confirmed playable CDN stream: "${cand.title}" -> ${res.url.split('?')[0]}`);
+                this.sourceRelease = cand.title;
+                this.sourceQuality = cand.quality;
+                this.sourceSizeBytes = cand.sizeBytes || 0;
+                this.qualityMismatch = normalizeQualityTier(cand.quality) !== requestedQ;
+                if (this.qualityMismatch) {
+                  console.warn(`[WorkerSession:${this.guildId}] No reachable ${requestedQ} candidate - falling back to "${cand.title}" (${cand.quality}). Output is still encoded at ${requestedQ}, but the source being decoded is ${cand.quality}.`);
+                }
+                console.log(`[WorkerSession:${this.guildId}] Confirmed playable CDN stream: "${cand.title}" (${cand.quality}) -> ${res.url.split('?')[0]}`);
                 foundWorking = true;
                 break;
               } else {
@@ -202,6 +249,10 @@ export class WorkerGuildSession {
           }
           if (!foundWorking && streams[0]?.url) {
             streamUrlToUse = streams[0].url;
+            this.sourceRelease = streams[0].title;
+            this.sourceQuality = streams[0].quality;
+            this.sourceSizeBytes = streams[0].sizeBytes || 0;
+            this.qualityMismatch = normalizeQualityTier(streams[0].quality) !== requestedQ;
           }
         }
       } catch (err) {
@@ -702,6 +753,21 @@ export class WorkerGuildSession {
     this.configureQuality(quality);
     console.log(`[WorkerSession:${this.guildId}] Stream quality set to: ${this.qualityLabel} (${this.streamWidth}x${this.streamHeight} @ ${this.streamBitrateKbps} kbps)`);
 
+    // Mid-session quality changes re-encode the SAME already-resolved source
+    // file at the new output resolution (re-resolving a different source
+    // here would mean a second candidate probe + CDN reconnect mid-playback,
+    // which risks the single-connection-per-link dead-air bug this app was
+    // already burned by once). So recompute the mismatch flag against the
+    // actual source tier: e.g. switching to 1080p on a source that was only
+    // ever resolved at 720p means Discord will show an UPSCALED 720p source,
+    // not a genuine 1080p decode - the UI should say so.
+    if (this.sourceQuality) {
+      this.qualityMismatch = normalizeQualityTier(this.sourceQuality) !== normalizeQualityTier(quality);
+      if (this.qualityMismatch) {
+        console.warn(`[WorkerSession:${this.guildId}] Quality mismatch: output set to ${this.qualityLabel} but source file is "${this.sourceRelease}" (${this.sourceQuality}). Re-open the title to re-resolve a matching source instead of scaling.`);
+      }
+    }
+
     if (this.isStreaming) {
       console.log(`[WorkerSession:${this.guildId}] Applying quality ${this.qualityLabel} at ${this.currentPosition}s...`);
       await this.startStreamSegment(this.currentPosition);
@@ -828,6 +894,10 @@ export class WorkerGuildSession {
       resolution: this.qualityLabel,
       stallCount: 0,
       updatedAt: Date.now(),
+      sourceRelease: this.sourceRelease || undefined,
+      sourceQuality: this.sourceQuality || undefined,
+      sourceSizeBytes: this.sourceSizeBytes || undefined,
+      qualityMismatch: this.qualityMismatch,
     };
   }
 

@@ -35,6 +35,13 @@ export interface PlayerState {
   stallCount: number;
   errorMessage?: string;
   updatedAt: number;
+  /** The actual torrent/release title of the source file currently playing */
+  sourceRelease?: string;
+  /** The actual quality tag of the source file (may differ from the requested `resolution` if no exact-tier candidate was reachable) */
+  sourceQuality?: string;
+  sourceSizeBytes?: number;
+  /** True when no candidate matching the requested quality tier was reachable, and playback fell back to a different tier */
+  qualityMismatch?: boolean;
 }
 
 export interface PlaybackOptions {
