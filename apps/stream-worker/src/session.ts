@@ -492,8 +492,23 @@ export class WorkerGuildSession {
       '-threads', threads,
     ];
 
-    // Single unified filtergraph for video (scaling + subtitle rendering)
-    const vfFilters: string[] = [];
+    // Single unified filtergraph for video (scaling + subtitle rendering).
+    // IMPORTANT: `-vf` and `-filter:v` are the SAME ffmpeg option - the
+    // library's prepareStream() already emits its own `-filter:v
+    // scale=WxH` internally. If we also emit a separate `-vf` flag here (as
+    // this code used to do, containing ONLY the subtitle filter), ffmpeg
+    // takes the LAST occurrence on the command line and silently discards
+    // the other - so the moment subtitles were on, the scale filter was
+    // dropped entirely and the stream got encoded at the SOURCE file's
+    // native resolution (verified live: a 720p-configured session was
+    // actually streaming at the source's native ~536p because of this,
+    // confirmed by dumping the running ffmpeg command line on the VPS).
+    // Fix: always own the full video filter chain ourselves whenever we
+    // need to emit `-vf` at all, starting with the same scale the library
+    // would have applied, so it can never be silently clobbered. Scaling
+    // BEFORE burning in subtitles also keeps subtitle font size consistent
+    // regardless of the source file's native resolution.
+    const vfFilters: string[] = [`scale=${this.streamWidth}:${this.streamHeight}`];
 
     if (this.activeSubtitle !== 'Off' && this.activeSubtitlePath && fs.existsSync(this.activeSubtitlePath)) {
       // Offset PTS by seekSeconds minus subtitleDelaySeconds for frame-accurate timing
