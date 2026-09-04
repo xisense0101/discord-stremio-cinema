@@ -7,10 +7,20 @@ version: '3.8'
 #
 # Resource limits are tuned for a SHARED Oracle Always-Free VM.Standard.A1.Flex
 # (4 OCPU / 24GB total) that also runs other services (Judge0 sandbox, Postgres,
-# Redis, etc). Do not raise cpus much past ~2.5-3.0 here without checking what
+# Redis, etc). Do not raise cpus much past ~3.0 here without checking what
 # else is running on the box - ffmpeg oversubscribing threads past its cgroup
 # CPU quota causes throttling stalls, which is the #1 cause of stream stutter.
 # STREAM_ENCODE_THREADS below should always be <= the cpus limit, rounded down.
+#
+# The cgroup quota is a HARD cap, not a share: the container can never exceed
+# it even when the box is otherwise idle, so a quota set too close to the
+# steady-state draw turns every transient spike into a throttle stall. Raised
+# 2.50 -> 3.00 once the host's oci-keepalive.service stopped burning a full
+# core on a memory-write loop (it now allocates with --vm-hang 0 and idles at
+# ~3%), which freed the headroom to do it. That service is SCHED_IDLE, so it
+# yields this container the CPU the moment ffmpeg asks for it - the extra
+# 0.5 is real, not borrowed. Everything else on the box (Judge0, Postgres,
+# Redis, the backend) together idles around 0.15 cores.
 
 services:
   stream-worker:
@@ -20,14 +30,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.50'
+          cpus: '3.00'
           memory: 3072M
         reservations:
           cpus: '1.50'
           memory: 1536M
     mem_limit: 3072m
     mem_reservation: 1536m
-    cpus: 2.5
+    cpus: 3.0
     ipc: host
     tmpfs:
       - /tmp:size=1024M,mode=1777
