@@ -81,8 +81,10 @@ export class TokenManager {
     streamerToken?: string;
     controllerToken?: string;
     torboxApiKey?: string;
-  }): Promise<{ success: boolean; message?: string; error?: string; user?: string }> {
+  }): Promise<{ success: boolean; message?: string; error?: string; user?: string; restarting?: boolean }> {
     const { streamerToken, controllerToken, torboxApiKey } = tokens;
+    let restartRequired = false;
+    let newStreamerVerifiedUser: string | undefined;
 
     // If a new streamer token is provided, test it first with Discord
     if (streamerToken && streamerToken.trim()) {
@@ -105,19 +107,26 @@ export class TokenManager {
         const user = await res.json();
         console.log(`[TokenManager] Streamer token verified for: ${user.username} (${user.id})`);
 
-        // Re-login streamer client
-        try {
-          if (this.streamer.client) {
-            await this.streamer.client.destroy();
-          }
-          await this.streamer.client.login(cleanToken);
-          console.log(`[TokenManager] Streamer reconnected as: ${this.streamer.client.user?.tag}`);
-        } catch (loginErr) {
-          console.warn('[TokenManager] Client re-login warning:', (loginErr as Error).message);
-        }
-
         config.discord.streamerToken = cleanToken;
         this.updateEnvFile('DISCORD_STREAMER_TOKEN', cleanToken);
+        newStreamerVerifiedUser = user.username;
+
+        // Deliberately NOT hot-swapping the token on the live client via
+        // client.destroy() + client.login(). Verified live: doing that
+        // leaves the Streamer wrapper's gateway event wiring (_gatewayEmitter,
+        // which joinVoice()/createStream() depend on to detect
+        // VOICE_STATE_UPDATE/VOICE_SERVER_UPDATE) pointing at the dead old
+        // connection - client.login() resolves and briefly populates
+        // client.user (so the swap LOOKS like it worked), but voice joins
+        // hang forever waiting for gateway events that never arrive, and
+        // the Go-Live stream never gets a session_id ("Session doesn't
+        // exist yet"), so ffmpeg encodes happily while nothing ever reaches
+        // Discord - a stream that looks PLAYING in app state but is
+        // actually blank. The token is valid and saved above; restarting
+        // the process (below) gives a completely fresh client/gateway
+        // connection instead, which Docker's restart policy brings back up
+        // in ~10-20s.
+        restartRequired = true;
       } catch (err) {
         return {
           success: false,
@@ -141,6 +150,25 @@ export class TokenManager {
     // Invalidate cache on token update
     this.cachedHealth = null;
     this.lastHealthCheckTime = 0;
+
+    if (restartRequired) {
+      // Let this response actually reach the caller before tearing down.
+      // Reuses the existing SIGTERM handler (stops sessions/ffmpeg cleanly,
+      // closes the browser manager and remux server) - Docker's
+      // `restart: unless-stopped` policy brings the container back up with
+      // the new token already saved to .env.
+      console.log('[TokenManager] Streamer token changed - restarting worker process to establish a fresh connection...');
+      setTimeout(() => {
+        process.kill(process.pid, 'SIGTERM');
+      }, 750);
+
+      return {
+        success: true,
+        message: `Streamer token verified for "${newStreamerVerifiedUser}" and saved. Restarting the worker to connect with the new account (~15-20s)...`,
+        user: newStreamerVerifiedUser,
+        restarting: true,
+      };
+    }
 
     return {
       success: true,

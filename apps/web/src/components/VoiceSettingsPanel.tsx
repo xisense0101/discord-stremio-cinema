@@ -238,8 +238,20 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
         setStreamerTokenInput('');
         setControllerTokenInput('');
         setTorboxApiKeyInput('');
-        loadData();
-        if (onTokenUpdated) onTokenUpdated();
+
+        if (data.restarting) {
+          // The worker process is restarting to get a fresh Discord gateway
+          // connection for the new streamer token - hitting it right now
+          // would just show a confusing "offline" flash mid-restart, so
+          // wait out the expected window before refreshing.
+          setTimeout(() => {
+            loadData();
+            if (onTokenUpdated) onTokenUpdated();
+          }, 18000);
+        } else {
+          loadData();
+          if (onTokenUpdated) onTokenUpdated();
+        }
       } else {
         setError(data.error || 'Token validation failed. Check your token and try again.');
       }
@@ -422,7 +434,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
             <div>
               <span className="font-bold">Streamer User Token is Expired or Invalid!</span>
               <p className="mt-0.5 text-rose-300/80">
-                Discord session tokens rotate periodically. Paste your new Discord User Account Token below and click <strong>&quot;Update & Reconnect Streamer&quot;</strong> to resume streaming immediately without restarting the server.
+                Discord session tokens rotate periodically. Paste your new Discord User Account Token below and click <strong>&quot;Update & Reconnect Streamer&quot;</strong>. The worker briefly restarts (~15-20s) to establish a fresh connection with the new account - any active stream will stop during that window.
               </p>
             </div>
           </div>
