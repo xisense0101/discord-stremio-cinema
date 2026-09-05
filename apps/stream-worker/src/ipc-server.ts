@@ -3,7 +3,7 @@ import { SessionManager } from './session-manager.js';
 import { TokenManager } from './token-manager.js';
 import { undeafenStreamer } from './session.js';
 import { getStoredSettings, saveStoredSettings } from './settings-store.js';
-import { listQueue, enqueue, insertAt, removeAt, reorder, updateAt, clearQueue } from './queue-store.js';
+import { listQueue, enqueue, enqueueMany, insertAt, removeAt, reorder, updateAt, clearQueue } from './queue-store.js';
 import { getSystemMetrics } from '@discord-stremio/diagnostics';
 import config from '@discord-stremio/config';
 
@@ -123,6 +123,14 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
           const targetGuild = payload.guildId || guildId;
 
           if (req.method === 'POST') {
+            // Batch form: a Smart Marathon sends its whole picked list in one
+            // request instead of one HTTP round trip per movie.
+            if (Array.isArray(payload.items)) {
+              const items = enqueueMany(targetGuild, payload.items);
+              res.writeHead(200);
+              res.end(JSON.stringify({ success: true, items, size: items.length }));
+              return;
+            }
             const item = payload.item;
             if (!item || !item.media) {
               res.writeHead(400);

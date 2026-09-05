@@ -83,10 +83,34 @@ export function queueSize(guildId: string): number {
   return listQueue(guildId).length;
 }
 
+/**
+ * Adds an item unless the same title is already queued. Re-running a Smart
+ * Marathon otherwise stacked the same films over and over - one real queue
+ * had Avengers: Endgame three times and Insidious three times - because each
+ * run picks from the same popularity-ranked catalogue.
+ */
 export function enqueue(guildId: string, item: StoredQueueItem): StoredQueueItem[] {
   const map = readAll();
   const items = map[guildId] || [];
-  items.push(item);
+  if (!items.some((existing) => existing.media?.imdbId === item.media?.imdbId)) {
+    items.push(item);
+  }
+  map[guildId] = items;
+  writeAll(map);
+  return items;
+}
+
+/** Appends many items under a single read/write, skipping duplicates. */
+export function enqueueMany(guildId: string, newItems: StoredQueueItem[]): StoredQueueItem[] {
+  const map = readAll();
+  const items = map[guildId] || [];
+  const seen = new Set(items.map((i) => i.media?.imdbId).filter(Boolean));
+  for (const item of newItems) {
+    const id = item.media?.imdbId;
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    items.push(item);
+  }
   map[guildId] = items;
   writeAll(map);
   return items;

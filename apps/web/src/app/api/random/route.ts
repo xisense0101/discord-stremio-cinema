@@ -13,12 +13,12 @@ import { getStoredSettings } from '@/lib/settings-store';
 export const dynamic = 'force-dynamic';
 
 /** The worker owns the queue - see apps/stream-worker/src/queue-store.ts. */
-async function enqueueOnWorker(guildId: string, item: QueueItem): Promise<void> {
+async function enqueueManyOnWorker(guildId: string, items: QueueItem[]): Promise<void> {
   const res = await fetch(`${WORKER_URL}/api/queue?guildId=${encodeURIComponent(guildId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-    body: JSON.stringify({ item, guildId }),
-    signal: AbortSignal.timeout(8000),
+    body: JSON.stringify({ items, guildId }),
+    signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error(`Worker queue enqueue failed (HTTP ${res.status})`);
 }
@@ -73,11 +73,18 @@ export async function POST(req: NextRequest) {
       genre = 'all',
       minRating = 6.5,
       quality,
-      guildId = DEFAULT_GUILD_ID,
+      guildId,
       requestedBy = 'senzu (Smart Marathon Binge)',
     } = await req.json();
 
     const settings = await getStoredSettings();
+    // The queue is per-guild, so a marathon must land in the server the user
+    // is actually watching in. Falling straight back to DEFAULT_GUILD_ID (as
+    // this did) queued every marathon into one hardcoded server regardless of
+    // where playback was pointed, so the run reported "Queued N movies" while
+    // the queue on screen stayed empty - the entries were real, just filed
+    // under a guild the UI was not looking at.
+    const targetGuildId = guildId || settings.selectedGuildId || DEFAULT_GUILD_ID;
     const targetQuality = quality || settings.defaultQuality || '1080p';
 
     const movies = await fetchMoviesCatalog(genre);
@@ -103,31 +110,37 @@ export async function POST(req: NextRequest) {
     const queuedItems: QueueItem[] = [];
     let totalScheduledMins = 0;
 
-    // Resolve streams and queue each picked movie matching target quality.
-    // Resolution is best-effort - the worker re-resolves from the imdbId when
-    // it actually plays the item - so a movie is still queued if its stream
-    // lookup fails here, rather than being silently dropped from the marathon.
-    for (const movie of picked) {
-      let selectedStream;
-      try {
-        const streams = await resolveMediaStreams('movie', movie.imdbId, undefined, undefined, targetQuality);
-        selectedStream = streams?.[0];
-      } catch {
-        selectedStream = undefined;
-      }
+    // Resolve every pick at once, then write the whole marathon in a single
+    // request. Doing this one movie at a time meant a lookup (several seconds
+    // each) plus an HTTP round trip per film in series, so a ten-title
+    // marathon left the modal spinning for the best part of a minute.
+    // Resolution stays best-effort: it only supplies the release label, since
+    // the worker re-resolves from the imdbId when it actually plays the item,
+    // so a failed lookup must not drop the film from the marathon.
+    const resolved = await Promise.all(
+      picked.map(async (movie) => {
+        try {
+          const streams = await resolveMediaStreams('movie', movie.imdbId, undefined, undefined, targetQuality);
+          return streams?.[0];
+        } catch {
+          return undefined;
+        }
+      })
+    );
 
-      const item: QueueItem = {
-        id: `queue_rand_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-        guildId,
+    picked.forEach((movie, i) => {
+      queuedItems.push({
+        id: `queue_rand_${Date.now()}_${i}_${Math.random().toString(36).substring(7)}`,
+        guildId: targetGuildId,
         media: movie,
-        stream: selectedStream,
+        stream: resolved[i],
         requestedBy,
         addedAt: Date.now(),
-      };
-      await enqueueOnWorker(guildId, item);
-      queuedItems.push(item);
+      });
       totalScheduledMins += parseRuntimeMinutes(movie.runtime) + 2;
-    }
+    });
+
+    await enqueueManyOnWorker(targetGuildId, queuedItems);
 
     const schedHours = Math.floor(totalScheduledMins / 60);
     const schedMins = totalScheduledMins % 60;

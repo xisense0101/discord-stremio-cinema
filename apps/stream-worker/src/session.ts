@@ -125,6 +125,55 @@ export class WorkerGuildSession {
   }
 
   /**
+   * Checks whether a candidate link will actually serve video, and returns the
+   * final CDN URL it resolves to.
+   *
+   * This deliberately issues a ranged GET rather than a HEAD. ElfHosted's
+   * playback proxy answers HEAD for a perfectly good link by redirecting to
+   * slate.elfhosted.com (its placeholder clip), and answers some with a bare
+   * 405 Method Not Allowed - so a HEAD probe reported healthy sources as dead.
+   * Verified against one link on the worker itself:
+   *
+   *   HEAD              -> slate.elfhosted.com, 200
+   *   GET Range 0-1023  -> nexus-158.indi.tb-cdn.pw, 206, real bytes
+   *
+   * That false negative is what rejected every candidate for several titles
+   * and, before this, what made the player "buffer" forever or play a two
+   * minute slate. A GET for the first byte is what ffmpeg is about to do
+   * anyway, so it answers the only question that matters: will this play?
+   * The body is cancelled immediately so nothing is actually downloaded.
+   */
+  private async probeCandidate(cand: { url: string; title: string }): Promise<{
+    ok: boolean;
+    url: string;
+    reason: string;
+  }> {
+    try {
+      const res = await fetch(cand.url, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Range: 'bytes=0-1023',
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+
+      try { await res.body?.cancel(); } catch {}
+
+      if (res.url && res.url.includes('slate.elfhosted.com')) {
+        return { ok: false, url: '', reason: 'resolved to an ElfHosted slate placeholder' };
+      }
+      if (res.status >= 400) {
+        return { ok: false, url: '', reason: `HTTP ${res.status}` };
+      }
+      return { ok: true, url: res.url || cand.url, reason: '' };
+    } catch (err) {
+      return { ok: false, url: '', reason: (err as Error).message };
+    }
+  }
+
+  /**
    * Follow HTTP 302/307 redirects or query TorBox API directly for direct video CDN endpoint
    */
   private async resolveFinalStreamUrl(rawUrl: string): Promise<string> {
@@ -144,15 +193,24 @@ export class WorkerGuildSession {
         }
       }
 
-      // 2. Standard HTTP redirect resolution with browser user-agent
+      // 2. Standard HTTP redirect resolution with browser user-agent.
+      // Uses a ranged GET for the same reason probeCandidate() does: a HEAD
+      // here gets redirected to the slate placeholder even for links that
+      // play perfectly, and this function's result is the URL handed straight
+      // to ffmpeg - so a HEAD was how the two minute slate ended up being
+      // streamed as if it were the movie.
       if (rawUrl.startsWith('http')) {
         console.log(`[WorkerSession:${this.guildId}] Resolving stream URL redirect chain...`);
         const res = await fetch(rawUrl, {
-          method: 'HEAD',
+          method: 'GET',
           redirect: 'follow',
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-          signal: AbortSignal.timeout(8000),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            Range: 'bytes=0-1023',
+          },
+          signal: AbortSignal.timeout(12000),
         });
+        try { await res.body?.cancel(); } catch {}
 
         if (res.url && res.url.includes('slate.elfhosted.com')) {
           console.warn(`[WorkerSession:${this.guildId}] Detected ElfHosted Slate IP-lock redirect (${res.url.substring(0, 80)}...). Fallback to direct resolution...`);
@@ -241,35 +299,37 @@ export class WorkerGuildSession {
           const otherTiers = streams.filter((s) => normalizeQualityTier(s.quality) !== requestedQ);
           const probeOrder = [...exactTier, ...otherTiers].slice(0, 12);
 
-          let foundWorking = false;
-          for (const cand of probeOrder) {
-            try {
-              const res = await fetch(cand.url, {
-                method: 'HEAD',
-                redirect: 'follow',
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-                signal: AbortSignal.timeout(5000),
-              });
-              if (res.url && !res.url.includes('slate.elfhosted.com') && res.status < 400) {
-                streamUrlToUse = res.url;
-                this.sourceRelease = cand.title;
-                this.sourceQuality = cand.quality;
-                this.sourceSizeBytes = cand.sizeBytes || 0;
-                this.qualityMismatch = normalizeQualityTier(cand.quality) !== requestedQ;
-                if (this.qualityMismatch) {
-                  console.warn(`[WorkerSession:${this.guildId}] No reachable ${requestedQ} candidate - falling back to "${cand.title}" (${cand.quality}). Output is still encoded at ${requestedQ}, but the source being decoded is ${cand.quality}.`);
-                }
-                console.log(`[WorkerSession:${this.guildId}] Confirmed playable CDN stream: "${cand.title}" (${cand.quality}) -> ${res.url.split('?')[0]}`);
-                foundWorking = true;
-                break;
-              } else {
-                console.warn(`[WorkerSession:${this.guildId}] Candidate "${cand.title}" returned slate video or error (${res.status}). Checking next...`);
-              }
-            } catch {
-              // try next candidate
+          // Probe every candidate at once and keep the best one that answers,
+          // rather than walking them one at a time.
+          //
+          // Sequential probing cost 25-45s per play attempt (measured: 12
+          // candidates at 1.5-8.6s each), and that whole wait was paid again
+          // on every retry. Nothing about the probes depends on each other,
+          // so they run concurrently and preference order is applied to the
+          // results afterwards - the winner is still the earliest candidate
+          // in probeOrder that passed, so quality-tier preference is
+          // unchanged.
+          const probed = await Promise.all(probeOrder.map((cand) => this.probeCandidate(cand)));
+          const winnerIndex = probed.findIndex((p) => p.ok);
+
+          if (winnerIndex >= 0) {
+            const cand = probeOrder[winnerIndex];
+            streamUrlToUse = probed[winnerIndex].url;
+            this.sourceRelease = cand.title;
+            this.sourceQuality = cand.quality;
+            this.sourceSizeBytes = cand.sizeBytes || 0;
+            this.qualityMismatch = normalizeQualityTier(cand.quality) !== requestedQ;
+            if (this.qualityMismatch) {
+              console.warn(`[WorkerSession:${this.guildId}] No reachable ${requestedQ} candidate - falling back to "${cand.title}" (${cand.quality}). Output is still encoded at ${requestedQ}, but the source being decoded is ${cand.quality}.`);
+            }
+            console.log(`[WorkerSession:${this.guildId}] Confirmed playable CDN stream: "${cand.title}" (${cand.quality}) -> ${streamUrlToUse.split('?')[0]}`);
+          } else {
+            for (let i = 0; i < probeOrder.length; i++) {
+              console.warn(`[WorkerSession:${this.guildId}] Candidate "${probeOrder[i].title}" rejected: ${probed[i].reason}`);
             }
           }
-          if (!foundWorking) {
+
+          if (winnerIndex < 0) {
             // Every candidate was a slate or an error. Falling back to
             // streams[0] here (as this used to) hands playback a link already
             // proven bad: ElfHosted answers an IP-locked link with a ~2 minute

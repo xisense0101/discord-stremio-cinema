@@ -176,115 +176,82 @@ export default function CinemaDashboard() {
 
   // Add a movie to queue using active defaultQuality
   const handleQueueMedia = async (mediaItem: any, qualityOverride?: string) => {
+    await queueMutate('POST', { mediaItem, quality: qualityOverride || defaultQuality || '720p' });
+  };
+
+  // Every queue mutation goes through here so that two things are always
+  // true: the request carries the guild currently being watched, and the
+  // list on screen updates from the response instead of waiting up to two
+  // seconds for the next poll.
+  //
+  // The guildId matters more than it looks. The queue is stored per guild, and
+  // several of these calls used to omit it entirely - so removing, clearing or
+  // reordering while watching one server silently edited a different server's
+  // queue (whatever DEFAULT_GUILD_ID points at) and the list on screen never
+  // changed.
+  const queueMutate = async (method: string, body: Record<string, unknown>) => {
     try {
-      const targetQuality = qualityOverride || defaultQuality || '720p';
-      await fetch('/api/queue', {
-        method: 'POST',
+      const res = await fetch('/api/queue', {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mediaItem,
-          quality: targetQuality,
-          guildId: activeVoiceInfo.guildId,
-        }),
+        body: JSON.stringify({ ...body, guildId: activeVoiceInfo.guildId }),
       });
-      fetchState();
+      const data = await res.json().catch(() => null);
+      if (Array.isArray(data?.items)) {
+        setQueueItems(data.items);
+      } else {
+        fetchState();
+      }
     } catch (err) {
-      console.error('Queue error:', err);
+      console.error('Queue update error:', err);
+      fetchState();
     }
   };
 
   // Add a specific chosen torrent stream to queue
   const handleQueueStream = async (mediaItem: any, stream: StreamItem, targetQuality: string) => {
-    try {
-      await fetch('/api/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mediaItem,
-          stream,
-          quality: targetQuality || defaultQuality || '720p',
-          guildId: activeVoiceInfo.guildId,
-        }),
-      });
-      fetchState();
-    } catch (err) {
-      console.error('Queue stream error:', err);
-    }
+    await queueMutate('POST', {
+      mediaItem,
+      stream,
+      quality: targetQuality || defaultQuality || '720p',
+    });
   };
 
   // Replace / Swap movie at index in queue
   const handleReplaceQueueItem = async (index: number, mediaItem: any) => {
-    try {
-      await fetch('/api/queue', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          index,
-          mediaItem,
-          quality: defaultQuality,
-          guildId: activeVoiceInfo.guildId,
-        }),
-      });
-      fetchState();
-    } catch (err) {
-      console.error('Swap item error:', err);
-    }
+    await queueMutate('PATCH', { index, mediaItem, quality: defaultQuality });
   };
 
   // Update item quality in queue
   const handleUpdateItemQuality = async (index: number, quality: string) => {
-    try {
-      await fetch('/api/queue', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ index, quality }),
-      });
-      fetchState();
-    } catch (err) {
-      console.error('Update quality error:', err);
-    }
+    await queueMutate('PATCH', { index, quality });
   };
 
   // Remove from queue
   const handleRemoveQueueItem = async (index: number) => {
-    try {
-      await fetch('/api/queue', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ index }),
-      });
-      fetchState();
-    } catch (err) {
-      console.error('Remove queue item error:', err);
-    }
+    // Drop it on screen straight away; the response reconciles the real list.
+    setQueueItems((prev) => prev.filter((_, i) => i !== index));
+    await queueMutate('DELETE', { index });
   };
 
   // Clear queue
   const handleClearQueue = async () => {
-    try {
-      await fetch('/api/queue', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clearAll: true }),
-      });
-      fetchState();
-    } catch (err) {
-      console.error('Clear queue error:', err);
-    }
+    setQueueItems([]);
+    await queueMutate('DELETE', { clearAll: true });
   };
 
   // Reorder queue
   const handleReorderQueue = async (fromIndex: number, toIndex: number) => {
-    try {
-      await fetch('/api/queue', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fromIndex, toIndex }),
-      });
-      fetchState();
-    } catch (err) {
-      console.error('Reorder queue error:', err);
-    }
+    // Move it locally first so dragging feels immediate rather than snapping
+    // back until the worker answers.
+    setQueueItems((prev) => {
+      if (fromIndex < 0 || fromIndex >= prev.length || toIndex < 0 || toIndex >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    await queueMutate('PATCH', { fromIndex, toIndex });
   };
 
   // Skip intermission
