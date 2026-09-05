@@ -29,7 +29,7 @@ interface QueueViewProps {
   onAddCustomMovie: (mediaItem: any, quality?: string) => Promise<void>;
   onUpdateItemQuality?: (index: number, quality: string) => Promise<void>;
   onReplaceItem?: (index: number, mediaItem: any) => Promise<void>;
-  onPlayNow?: (mediaItem: any) => Promise<void>;
+  onPlayNow?: (mediaItem: any, index: number) => Promise<void>;
   loading: boolean;
 }
 
@@ -297,7 +297,7 @@ export const QueueView: React.FC<QueueViewProps> = ({
                   <div className="flex items-center gap-1 shrink-0">
                     {onPlayNow && (
                       <button
-                        onClick={() => onPlayNow(item.media)}
+                        onClick={() => onPlayNow(item.media, idx)}
                         disabled={loading}
                         title="Play this movie right now"
                         className="p-1.5 rounded-lg hover:bg-indigo-600/30 text-indigo-400 hover:text-white transition-colors"

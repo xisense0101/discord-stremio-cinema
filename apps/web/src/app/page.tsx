@@ -105,8 +105,16 @@ export default function CinemaDashboard() {
     }
   };
 
-  // Play a movie immediately using active defaultQuality
-  const handlePlayMedia = async (mediaItem: any, qualityOverride?: string) => {
+  // Play a movie immediately using active defaultQuality.
+  // `fromQueueIndex` is set when this came from a queue row's "Play Now": that
+  // entry has to leave the queue, otherwise it is still sitting at the front
+  // when the movie ends and the intermission "advances" straight back into the
+  // title that just finished.
+  const handlePlayMedia = async (
+    mediaItem: any,
+    qualityOverride?: string,
+    fromQueueIndex?: number
+  ) => {
     setLoading(true);
     try {
       const targetQuality = qualityOverride || defaultQuality || '720p';
@@ -123,6 +131,13 @@ export default function CinemaDashboard() {
       const data = await res.json();
       if (data.state) {
         setPlayerState(data.state);
+      }
+      if (data.success !== false && typeof fromQueueIndex === 'number') {
+        await fetch('/api/queue', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: fromQueueIndex, guildId: activeVoiceInfo.guildId }),
+        });
       }
     } catch (err) {
       console.error('Play error:', err);
@@ -411,7 +426,7 @@ export default function CinemaDashboard() {
                   onAddCustomMovie={(item, q) => handleQueueMedia(item, q)}
                   onUpdateItemQuality={handleUpdateItemQuality}
                   onReplaceItem={handleReplaceQueueItem}
-                  onPlayNow={(item) => handlePlayMedia(item)}
+                  onPlayNow={(item, index) => handlePlayMedia(item, undefined, index)}
                   loading={loading}
                 />
               </div>

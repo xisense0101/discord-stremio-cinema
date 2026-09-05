@@ -83,6 +83,8 @@ export class WorkerGuildSession {
    * film ended at ~79% and a 3-hour one sat pinned at 100% for an hour.
    */
   private duration: number = 0;
+  /** Re-entrancy guard: several signals can conclude the same movie is over. */
+  private finishingMedia: boolean = false;
   private playbackStatus: 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ENDED' | 'ERROR' | 'INTERMISSION' = 'IDLE';
   private intermissionRemaining: number = 0;
   private intermissionTimer: NodeJS.Timeout | null = null;
@@ -195,6 +197,7 @@ export class WorkerGuildSession {
     this.sourceSizeBytes = 0;
     this.qualityMismatch = false;
     this.duration = 0;
+    this.finishingMedia = false;
 
     this.configureQuality(options.quality || '720p');
     console.log(`[WorkerSession:${this.guildId}] Opening media: "${this.currentTitle}" (Quality: ${this.qualityLabel})`);
@@ -607,6 +610,31 @@ export class WorkerGuildSession {
       customFfmpegFlags.push('-vf', vfFilters.join(','));
     }
 
+    // Bound the segment to the movie's remaining runtime so ffmpeg exits by
+    // itself when the film is over.
+    //
+    // Without this, ffmpeg never terminates at the end of a file. Both this
+    // code and prepareStream() pass `-reconnect_at_eof 1` (and the library's
+    // copy is emitted after ours, so it wins on duplicate-option precedence
+    // and cannot be overridden from customInputOptions). That flag is meant
+    // for live or still-growing sources: on a fixed-length movie it tells
+    // ffmpeg to reconnect and keep waiting at EOF instead of exiting. So the
+    // process sat there forever, the 'end' event below never fired,
+    // handleMediaFinished() was never reached, and playback went blank while
+    // the session still reported PLAYING - no intermission, no next title.
+    // Verified live: three ffmpeg processes were found still running on a
+    // movie that had finished minutes earlier.
+    //
+    // `-t` is an output option, and ours are appended last, so this one does
+    // take effect. It is a bound, not a trim: it equals exactly what is left
+    // of the film from this seek point.
+    if (this.duration > 0) {
+      const remaining = this.duration - seekSeconds;
+      if (remaining > 1) {
+        customFfmpegFlags.push('-t', String(Math.ceil(remaining)));
+      }
+    }
+
     // Only NOW - after the previous segment's connection to this same
     // source URL has been fully closed above - open the new one.
     const { command, output } = prepareStream(this.resolvedCdnUrl, {
@@ -624,16 +652,48 @@ export class WorkerGuildSession {
     });
 
     try {
-      // Synchronize: wait until output has header bytes ready before demuxing
+      // Synchronize: wait until output has header bytes ready before demuxing.
+      //
+      // The timeout is essential, not defensive. A segment that produces no
+      // output at all - most easily by seeking to or past the final second of
+      // the file, but equally by a source that stops responding - would
+      // otherwise never emit 'readable' and never emit 'error', so this await
+      // hung forever: the function never reached the kill/supersede handling
+      // below, so the ffmpeg process was never cleaned up and the session was
+      // left wedged. Verified live, with two orphaned `-ss <duration>`
+      // processes still holding connections to the source long afterwards -
+      // which matters especially here, because these debrid links only
+      // tolerate one connection at a time, so leaked processes can break the
+      // stream that is still playing.
       await new Promise<void>((resolve, reject) => {
-        command.once('error', reject);
-        if (output.readableLength > 0) return resolve();
-        output.once('readable', () => resolve());
+        const timer = setTimeout(
+          () => reject(new Error('no output produced within 20s')),
+          20000
+        );
+        const settle = (err?: Error) => {
+          clearTimeout(timer);
+          err ? reject(err) : resolve();
+        };
+        command.once('error', (err: Error) => settle(err));
+        if (output.readableLength > 0) return settle();
+        output.once('readable', () => settle());
       });
     } catch (err) {
       console.warn(`[WorkerSession:${this.guildId}] New segment failed to start:`, (err as Error).message);
       try { command.kill('SIGKILL'); } catch {}
-      this.playbackStatus = 'ERROR';
+      // Only claim the session broke if this attempt is still the current one;
+      // a superseded attempt failing is expected and must not clobber the
+      // status of the segment that replaced it.
+      if (generation === this.segmentGeneration) {
+        // Running past the end of the film is a finished movie, not an error -
+        // hand it to the same path a clean ffmpeg exit would take so the
+        // intermission and the next queue item still happen.
+        if (this.duration > 0 && seekSeconds >= this.duration - 2) {
+          void this.handleMediaFinished();
+        } else {
+          this.playbackStatus = 'ERROR';
+        }
+      }
       return;
     }
 
@@ -654,8 +714,28 @@ export class WorkerGuildSession {
     // Track playback clock
     this.currentPosition = seekSeconds;
     this.progressInterval = setInterval(() => {
-      if (this.playbackStatus === 'PLAYING') {
-        this.currentPosition += 1;
+      if (this.playbackStatus !== 'PLAYING') return;
+      this.currentPosition += 1;
+
+      // Backstop for finishing a movie. The `-t` bound above should make
+      // ffmpeg exit on its own and fire 'end', but the clock reaching the
+      // runtime is independent evidence that the film is over, and it is what
+      // keeps a wedged or silently-stalled encoder from leaving the session
+      // stuck on PLAYING forever with a blank screen - the exact failure this
+      // replaced. A couple of seconds of slack absorbs clock drift.
+      if (
+        this.duration > 0 &&
+        this.activeFfmpegCommand === command &&
+        this.currentPosition >= this.duration + 2
+      ) {
+        console.log(`[WorkerSession:${this.guildId}] Playback clock reached the end of the movie (${this.duration}s) without ffmpeg exiting - finishing.`);
+        if (this.progressInterval) {
+          clearInterval(this.progressInterval);
+          this.progressInterval = null;
+        }
+        try { command.kill('SIGKILL'); } catch {}
+        this.activeFfmpegCommand = null;
+        void this.handleMediaFinished();
       }
     }, 1000);
 
@@ -717,8 +797,21 @@ export class WorkerGuildSession {
   }
 
   async seek(seconds: number): Promise<void> {
-    console.log(`[WorkerSession:${this.guildId}] Seeking to ${seconds}s...`);
-    this.currentPosition = Math.max(0, seconds);
+    let target = Math.max(0, seconds);
+
+    // Dragging the scrubber to the very end asks ffmpeg to start at EOF, which
+    // produces no frames at all. Treat landing in the last few seconds as
+    // "finish the movie" - that is what the user meant - and otherwise keep
+    // the start point just inside the file.
+    if (this.duration > 0 && target >= this.duration - 3) {
+      console.log(`[WorkerSession:${this.guildId}] Seek to ${target}s is at/after the end of a ${this.duration}s movie - finishing it.`);
+      this.currentPosition = this.duration;
+      await this.handleMediaFinished();
+      return;
+    }
+
+    console.log(`[WorkerSession:${this.guildId}] Seeking to ${target}s...`);
+    this.currentPosition = target;
     await this.startStreamSegment(this.currentPosition);
   }
 
@@ -891,6 +984,13 @@ export class WorkerGuildSession {
   }
 
   private async handleMediaFinished(): Promise<void> {
+    // Several independent signals can now conclude a movie is over (ffmpeg
+    // exiting, the playback clock passing the runtime, a seek landing at the
+    // end, a segment producing no output past the end). They can race, and
+    // handling the same ending twice would dequeue two titles and skip one.
+    if (this.finishingMedia) return;
+    this.finishingMedia = true;
+
     try {
       const { queueSize: getQueueSize } = await import('./queue-store.js');
       const { getStoredSettings } = await import('./settings-store.js');
