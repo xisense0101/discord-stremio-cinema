@@ -1104,18 +1104,21 @@ export class WorkerGuildSession {
       this.streamMaxBitrateKbps = 1800;
     } else {
       // Default 720p HD.
-      // 2000 rather than 2500: Node's packetizing thread is the bottleneck at
-      // ~97% of a core, and its cost scales with packet count, so 20% fewer
-      // bits on the wire is 20% less load on the part that is actually
-      // saturated. The veryfast preset above compresses better than the
-      // ultrafast one this replaced, so the picture should hold up despite
-      // the lower ceiling.
+      //
+      // Kept at 2500 because dropping it does not help. The theory was that
+      // Node's saturated packetizing thread costs scale with packet count, so
+      // fewer bits would mean less load; measured on a live stream, cutting
+      // 2500 -> 2000 moved output from ~2.6 to ~2.07 Mbit/s while Node stayed
+      // at 92-99% of a core. Its cost is not driven by bitrate, so the only
+      // thing the reduction bought was a worse picture. With the veryfast
+      // preset above compressing better than the ultrafast one it replaced,
+      // 2500 now buys more quality than it used to at the same cost to Node.
       this.currentQuality = '720p';
       this.qualityLabel = '720p HD';
       this.streamWidth = 1280;
       this.streamHeight = 720;
-      this.streamBitrateKbps = 2000;
-      this.streamMaxBitrateKbps = 2200;
+      this.streamBitrateKbps = 2500;
+      this.streamMaxBitrateKbps = 2700;
     }
   }
 
