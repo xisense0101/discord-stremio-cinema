@@ -38,6 +38,27 @@ services:
     mem_limit: 3072m
     mem_reservation: 1536m
     cpus: 3.0
+    # Pinned to three of the box's four cores, with the quota set to match.
+    #
+    # Two measured problems motivate this. First, the thread that packetizes
+    # and sends every RTP packet is a single Node thread needing ~100% of a
+    # core, and it was being bounced across all four cores about 40 times a
+    # minute and involuntarily preempted ~280 times a second. Each migration
+    # lands on a core whose L1/L2 is cold - these are Neoverse-N1 cores with
+    # private caches - and each preemption is a chance for a packet to go out
+    # late, which is what a viewer sees as a hitch.
+    #
+    # Second, ffmpeg bursts: it can encode at ~2x realtime and races ahead
+    # until the pipe backpressures it, hitting ~169% CPU in bursts. Because it
+    # shares this cgroup with Node, those bursts exhaust the CPU quota inside a
+    # 100ms period and the whole container gets throttled - Node included.
+    # Measured 53 throttle events in 30s.
+    #
+    # Giving the container exactly the three cores its quota allows means the
+    # quota can no longer bind before the cpuset does, and leaves core 3 for
+    # the host, Judge0 and the OCI keepalive, so nothing at normal priority
+    # competes for the cores this stream runs on.
+    cpuset: "0-2"
     ipc: host
     tmpfs:
       - /tmp:size=1024M,mode=1777
