@@ -53,11 +53,16 @@ export default function CinemaDashboard() {
 
       // 2. Fetch player state for that guild
       const stateUrl = currentGuildId ? `/api/player/state?guildId=${encodeURIComponent(currentGuildId)}` : '/api/player/state';
-      const res = await fetch(stateUrl);
+      const res = await fetch(stateUrl, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         setPlayerState(data.state);
-        setQueueItems(data.queue || []);
+        // A null queue means this poll could not reach the worker, which is
+        // not the same as the queue being empty - keep showing what we last
+        // knew rather than blanking the list on a single failed poll.
+        if (Array.isArray(data.queue)) {
+          setQueueItems(data.queue);
+        }
         setWorkerConnected(data.workerConnected !== false);
       }
 

@@ -6,9 +6,22 @@ import {
   parseRuntimeMinutes,
 } from '@/lib/random-movie';
 import { resolveMediaStreams } from '@discord-stremio/metadata';
-import { queueManager, QueueItem } from '@discord-stremio/queue';
-import { DEFAULT_GUILD_ID } from '@/lib/worker-client';
+import { QueueItem } from '@discord-stremio/queue';
+import { DEFAULT_GUILD_ID, WORKER_URL, workerAuthHeaders } from '@/lib/worker-client';
 import { getStoredSettings } from '@/lib/settings-store';
+
+export const dynamic = 'force-dynamic';
+
+/** The worker owns the queue - see apps/stream-worker/src/queue-store.ts. */
+async function enqueueOnWorker(guildId: string, item: QueueItem): Promise<void> {
+  const res = await fetch(`${WORKER_URL}/api/queue?guildId=${encodeURIComponent(guildId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
+    body: JSON.stringify({ item, guildId }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`Worker queue enqueue failed (HTTP ${res.status})`);
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -90,22 +103,30 @@ export async function POST(req: NextRequest) {
     const queuedItems: QueueItem[] = [];
     let totalScheduledMins = 0;
 
-    // Resolve streams and queue each picked movie matching target quality
+    // Resolve streams and queue each picked movie matching target quality.
+    // Resolution is best-effort - the worker re-resolves from the imdbId when
+    // it actually plays the item - so a movie is still queued if its stream
+    // lookup fails here, rather than being silently dropped from the marathon.
     for (const movie of picked) {
-      const streams = await resolveMediaStreams('movie', movie.imdbId, undefined, undefined, targetQuality);
-      if (streams && streams.length > 0) {
-        const item: QueueItem = {
-          id: `queue_rand_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-          guildId,
-          media: movie,
-          stream: streams[0],
-          requestedBy,
-          addedAt: Date.now(),
-        };
-        await queueManager.enqueue(guildId, item);
-        queuedItems.push(item);
-        totalScheduledMins += parseRuntimeMinutes(movie.runtime) + 2;
+      let selectedStream;
+      try {
+        const streams = await resolveMediaStreams('movie', movie.imdbId, undefined, undefined, targetQuality);
+        selectedStream = streams?.[0];
+      } catch {
+        selectedStream = undefined;
       }
+
+      const item: QueueItem = {
+        id: `queue_rand_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+        guildId,
+        media: movie,
+        stream: selectedStream,
+        requestedBy,
+        addedAt: Date.now(),
+      };
+      await enqueueOnWorker(guildId, item);
+      queuedItems.push(item);
+      totalScheduledMins += parseRuntimeMinutes(movie.runtime) + 2;
     }
 
     const schedHours = Math.floor(totalScheduledMins / 60);

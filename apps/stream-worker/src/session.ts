@@ -875,13 +875,20 @@ export class WorkerGuildSession {
 
   private async handleMediaFinished(): Promise<void> {
     try {
-      const { queueManager } = await import('@discord-stremio/queue');
-      const queueSize = await queueManager.size(this.guildId);
+      const { queueSize: getQueueSize } = await import('./queue-store.js');
+      const { getStoredSettings } = await import('./settings-store.js');
+      const queueSize = getQueueSize(this.guildId);
 
       if (queueSize > 0) {
-        console.log(`[WorkerSession:${this.guildId}] Media finished. Starting 2-minute intermission break before next queue item (${queueSize} remaining)...`);
+        const intermissionSeconds = Math.max(0, getStoredSettings().intermissionSeconds ?? 120);
+        console.log(`[WorkerSession:${this.guildId}] Media finished. Starting ${intermissionSeconds}s intermission before the next queue item (${queueSize} remaining)...`);
         this.playbackStatus = 'INTERMISSION';
-        this.intermissionRemaining = 120; // 2 minutes
+        this.intermissionRemaining = intermissionSeconds;
+
+        if (intermissionSeconds === 0) {
+          await this.playNextInQueue();
+          return;
+        }
 
         if (this.intermissionTimer) clearInterval(this.intermissionTimer);
 
@@ -904,24 +911,49 @@ export class WorkerGuildSession {
   }
 
   private async playNextInQueue(): Promise<void> {
-    try {
-      const { queueManager } = await import('@discord-stremio/queue');
-      const nextItem = await queueManager.dequeue(this.guildId);
+    if (this.intermissionTimer) {
+      clearInterval(this.intermissionTimer);
+      this.intermissionTimer = null;
+    }
+    this.intermissionRemaining = 0;
 
-      if (nextItem && nextItem.stream && nextItem.stream.url) {
+    try {
+      const { dequeue } = await import('./queue-store.js');
+
+      // Keep taking items until one actually starts. A single unplayable
+      // entry (source pulled, nothing resolvable) used to end the whole
+      // queue; the rest of the night should not be lost to one bad title.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const nextItem = dequeue(this.guildId);
+        if (!nextItem) break;
+
+        // A stored stream URL is optional: debrid links are IP-locked and
+        // expire, so openMedia() re-resolves from the imdbId regardless. Only
+        // an entry with neither is unplayable.
+        if (!nextItem.media?.imdbId && !nextItem.stream?.url) {
+          console.warn(`[WorkerSession:${this.guildId}] Skipping unplayable queue entry "${nextItem.media?.name || nextItem.id}" (no imdbId and no stream URL).`);
+          continue;
+        }
+
         console.log(`[WorkerSession:${this.guildId}] Auto-playing next queue item: "${nextItem.media.name}"...`);
-        await this.openMedia({
-          streamUrl: nextItem.stream.url,
-          title: nextItem.media.name,
-          imdbId: nextItem.media.imdbId,
-          type: nextItem.media.type || 'movie',
-          quality: nextItem.stream.quality || this.currentQuality,
-          voiceChannelId: this.voiceChannelId || '',
-          textChannelId: this.textChannelId || undefined,
-        });
-      } else {
-        this.playbackStatus = 'ENDED';
+        try {
+          await this.openMedia({
+            streamUrl: nextItem.stream?.url || '',
+            title: nextItem.media.name,
+            imdbId: nextItem.media.imdbId,
+            type: (nextItem.media.type as 'movie' | 'series') || 'movie',
+            quality: nextItem.stream?.quality || this.currentQuality,
+            voiceChannelId: this.voiceChannelId || '',
+            textChannelId: this.textChannelId || undefined,
+          });
+          return;
+        } catch (err) {
+          console.warn(`[WorkerSession:${this.guildId}] Queue item "${nextItem.media.name}" failed to start (${(err as Error).message}). Trying the next one...`);
+        }
       }
+
+      console.log(`[WorkerSession:${this.guildId}] No playable queue items remaining. Playback ended.`);
+      this.playbackStatus = 'ENDED';
     } catch (err) {
       console.error(`[WorkerSession:${this.guildId}] Error playing next queue item:`, err);
       this.playbackStatus = 'ENDED';

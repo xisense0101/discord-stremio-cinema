@@ -3,6 +3,7 @@ import { SessionManager } from './session-manager.js';
 import { TokenManager } from './token-manager.js';
 import { undeafenStreamer } from './session.js';
 import { getStoredSettings, saveStoredSettings } from './settings-store.js';
+import { listQueue, enqueue, insertAt, removeAt, reorder, updateAt, clearQueue } from './queue-store.js';
 import { getSystemMetrics } from '@discord-stremio/diagnostics';
 import config from '@discord-stremio/config';
 
@@ -92,6 +93,81 @@ export function startIpcServer(sessionManager: SessionManager): http.Server {
           const settings = saveStoredSettings(updates);
           res.writeHead(200);
           res.end(JSON.stringify({ success: true, settings }));
+        } catch (err) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ success: false, error: (err as Error).message }));
+        }
+      });
+      return;
+    }
+
+    // Playback queue endpoints. Same reasoning as the settings endpoints
+    // above, and the same bug they fix: the queue previously lived in an
+    // in-process Map inside whichever process touched it, so the web app and
+    // this worker each had their own private copy. See queue-store.ts.
+    if (req.url?.startsWith('/api/queue')) {
+      const url = new URL(req.url, 'http://localhost');
+      const guildId = url.searchParams.get('guildId') || '';
+
+      if (req.method === 'GET') {
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, items: listQueue(guildId) }));
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const targetGuild = payload.guildId || guildId;
+
+          if (req.method === 'POST') {
+            const item = payload.item;
+            if (!item || !item.media) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ success: false, error: 'item with media required' }));
+              return;
+            }
+            const items =
+              payload.insertIndex !== undefined && payload.insertIndex !== null
+                ? insertAt(targetGuild, Number(payload.insertIndex), item)
+                : enqueue(targetGuild, item);
+            res.writeHead(200);
+            res.end(JSON.stringify({ success: true, items, size: items.length, item }));
+            return;
+          }
+
+          if (req.method === 'DELETE') {
+            if (payload.clearAll) {
+              clearQueue(targetGuild);
+              res.writeHead(200);
+              res.end(JSON.stringify({ success: true, items: [] }));
+              return;
+            }
+            const removed = removeAt(targetGuild, Number(payload.index));
+            res.writeHead(200);
+            res.end(JSON.stringify({ success: true, removed, items: listQueue(targetGuild) }));
+            return;
+          }
+
+          if (req.method === 'PATCH') {
+            if (payload.fromIndex !== undefined && payload.toIndex !== undefined) {
+              const items = reorder(targetGuild, Number(payload.fromIndex), Number(payload.toIndex));
+              res.writeHead(200);
+              res.end(JSON.stringify({ success: true, items }));
+              return;
+            }
+            if (payload.index !== undefined && payload.updates) {
+              const updated = updateAt(targetGuild, Number(payload.index), payload.updates);
+              res.writeHead(200);
+              res.end(JSON.stringify({ success: true, updated, items: listQueue(targetGuild) }));
+              return;
+            }
+          }
+
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'Invalid queue request' }));
         } catch (err) {
           res.writeHead(500);
           res.end(JSON.stringify({ success: false, error: (err as Error).message }));

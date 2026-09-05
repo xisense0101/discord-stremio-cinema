@@ -134,7 +134,7 @@ export async function handleSlashCommand(interaction: ChatInputCommandInteractio
         return;
       }
       const list = items
-        .map((it, idx) => `**${idx + 1}.** ${it.media.name} (${it.stream.quality}) - Requested by <@${it.requestedBy}>`)
+        .map((it, idx) => `**${idx + 1}.** ${it.media.name} (${it.stream?.quality || "auto"}) - Requested by <@${it.requestedBy}>`)
         .join('\n');
       await interaction.editReply(`📜 **Current Queue (${items.length} items):**\n\n${list}`);
       break;
@@ -423,7 +423,7 @@ export async function handleComponentInteraction(
       if (items.length === 0) {
         await interaction.editReply({ content: '📜 Queue is currently empty.' });
       } else {
-        const list = items.map((it, idx) => `${idx + 1}. ${it.media.name} (${it.stream.quality})`).join('\n');
+        const list = items.map((it, idx) => `${idx + 1}. ${it.media.name} (${it.stream?.quality || "auto"})`).join('\n');
         await interaction.editReply({ content: `📜 **Queue:**\n${list}` });
       }
       break;
