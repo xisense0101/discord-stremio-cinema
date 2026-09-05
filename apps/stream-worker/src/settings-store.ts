@@ -1,7 +1,10 @@
 import fs from 'fs';
-import path from 'path';
+import { dataFile, ensureDataDir } from './data-dir.js';
 
-const SETTINGS_FILE = path.resolve(process.cwd(), 'data/user_settings.json');
+// Absolute, mount-aware path - see data-dir.ts. This previously resolved
+// against process.cwd(), which put settings in the container's writable layer
+// instead of the mounted volume, so they were silently discarded on redeploy.
+const SETTINGS_FILE = dataFile('user_settings.json');
 
 export interface UserSettings {
   userId: string;
@@ -38,10 +41,7 @@ export function getStoredSettings(): UserSettings {
 
 export function saveStoredSettings(updates: Partial<UserSettings>): UserSettings {
   try {
-    const dir = path.dirname(SETTINGS_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    ensureDataDir();
     const merged = { ...getStoredSettings(), ...updates };
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2), 'utf8');
     return merged;

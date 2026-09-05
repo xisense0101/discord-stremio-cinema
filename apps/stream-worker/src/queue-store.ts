@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
+import { dataFile, ensureDataDir } from './data-dir.js';
 
-const QUEUE_FILE = path.resolve(process.cwd(), 'data/queue.json');
+const QUEUE_FILE = dataFile('queue.json');
 
 export interface StoredQueueItem {
   id: string;
@@ -63,8 +64,7 @@ function readAll(): QueueMap {
 
 function writeAll(map: QueueMap): void {
   try {
-    const dir = path.dirname(QUEUE_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    ensureDataDir();
     // Write-then-rename so a crash mid-write can never leave a truncated file
     // that would read back as an empty queue.
     const tmp = `${QUEUE_FILE}.tmp`;

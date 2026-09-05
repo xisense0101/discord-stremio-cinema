@@ -50,6 +50,11 @@ services:
       - PORT=4001
       - PUPPETEER_HEADLESS=true
       - STREAM_ENCODE_THREADS=2
+      # Durable state (settings, playback queue) must be written to the
+      # mounted volume below, not relative to the process's cwd - pnpm runs
+      # the script from /app/apps/stream-worker, which lives in the image's
+      # writable layer and is destroyed on every redeploy.
+      - WORKER_DATA_DIR=/app/data
     volumes:
       - /opt/streamer/.env:/app/.env
       - /opt/streamer/data:/app/data
