@@ -299,18 +299,28 @@ export class WorkerGuildSession {
           const otherTiers = streams.filter((s) => normalizeQualityTier(s.quality) !== requestedQ);
           const probeOrder = [...exactTier, ...otherTiers].slice(0, 12);
 
-          // Probe every candidate at once and keep the best one that answers,
-          // rather than walking them one at a time.
+          // Probed one at a time, stopping at the first that answers.
           //
-          // Sequential probing cost 25-45s per play attempt (measured: 12
-          // candidates at 1.5-8.6s each), and that whole wait was paid again
-          // on every retry. Nothing about the probes depends on each other,
-          // so they run concurrently and preference order is applied to the
-          // results afterwards - the winner is still the earliest candidate
-          // in probeOrder that passed, so quality-tier preference is
-          // unchanged.
-          const probed = await Promise.all(probeOrder.map((cand) => this.probeCandidate(cand)));
-          const winnerIndex = probed.findIndex((p) => p.ok);
+          // This is deliberately NOT parallel. Probing all 12 at once was
+          // tried and made things strictly worse: ElfHosted throttles
+          // concurrent requests, so of 12 simultaneous probes 7 came back as
+          // slate placeholders and 5 timed out - for a title whose sources
+          // are perfectly healthy. Probed sequentially, the very same links
+          // return 206 from the real TorBox CDN. Sequential probing is also
+          // no longer slow, because it was never the loop that was slow: the
+          // old HEAD probe rejected everything, so all 12 always ran. With a
+          // truthful probe the first candidate usually wins outright, so a
+          // normal open costs one probe rather than twelve.
+          const probed: Array<{ ok: boolean; url: string; reason: string }> = [];
+          let winnerIndex = -1;
+          for (const cand of probeOrder) {
+            const result = await this.probeCandidate(cand);
+            probed.push(result);
+            if (result.ok) {
+              winnerIndex = probed.length - 1;
+              break;
+            }
+          }
 
           if (winnerIndex >= 0) {
             const cand = probeOrder[winnerIndex];
@@ -324,7 +334,7 @@ export class WorkerGuildSession {
             }
             console.log(`[WorkerSession:${this.guildId}] Confirmed playable CDN stream: "${cand.title}" (${cand.quality}) -> ${streamUrlToUse.split('?')[0]}`);
           } else {
-            for (let i = 0; i < probeOrder.length; i++) {
+            for (let i = 0; i < probed.length; i++) {
               console.warn(`[WorkerSession:${this.guildId}] Candidate "${probeOrder[i].title}" rejected: ${probed[i].reason}`);
             }
           }
@@ -339,7 +349,7 @@ export class WorkerGuildSession {
             // Fail loudly instead so the caller can move on to something that
             // will actually play.
             unplayable = new Error(
-              `No playable source for "${options.title}" - all ${probeOrder.length} candidates returned an ElfHosted slate or an error (the debrid links are IP-locked or expired).`
+              `No playable source for "${options.title}" - all ${probed.length} candidates returned an ElfHosted slate or an error (sources unavailable or throttled right now).`
             );
           }
         }
