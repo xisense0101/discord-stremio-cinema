@@ -297,7 +297,19 @@ export class WorkerGuildSession {
           const requestedQ = normalizeQualityTier(options.quality || '720p');
           const exactTier = streams.filter((s) => normalizeQualityTier(s.quality) === requestedQ);
           const otherTiers = streams.filter((s) => normalizeQualityTier(s.quality) !== requestedQ);
-          const probeOrder = [...exactTier, ...otherTiers].slice(0, 12);
+
+          // Each tier gets its own budget, instead of taking the first N of
+          // the concatenation. A popular title returns well over a hundred
+          // candidates, so `[...exactTier, ...otherTiers].slice(0, 12)` was
+          // filled entirely by the requested tier and the fallback tiers were
+          // never reached at all. That is exactly how playback failed for a
+          // title whose sources were fine: every 720p candidate for The Eye
+          // resolves to a slate, while its 1080p candidates return 206 from
+          // the real CDN - but the 1080p ones were always sliced off the end
+          // of the list. The requested tier is still tried first and in full,
+          // so quality preference is unchanged; this only guarantees there is
+          // somewhere to fall back to before declaring a title unplayable.
+          const probeOrder = [...exactTier.slice(0, 8), ...otherTiers.slice(0, 6)];
 
           // Probed one at a time, stopping at the first that answers.
           //
