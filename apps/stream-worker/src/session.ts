@@ -148,6 +148,14 @@ export class WorkerGuildSession {
     url: string;
     reason: string;
   }> {
+    // Only the response headers are needed - the status and the URL the chain
+    // ended at. Aborting explicitly the moment they arrive is what keeps this
+    // cheap: slate.elfhosted.com ignores the Range header and starts sending
+    // the whole placeholder clip, and waiting on body.cancel() to unwind that
+    // cost about 16s per candidate (measured: 145s to walk one dead tier).
+    // Aborting the controller drops the connection immediately instead.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
     try {
       const res = await fetch(cand.url, {
         method: 'GET',
@@ -156,20 +164,24 @@ export class WorkerGuildSession {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           Range: 'bytes=0-1023',
         },
-        signal: AbortSignal.timeout(12000),
+        signal: controller.signal,
       });
 
-      try { await res.body?.cancel(); } catch {}
+      const finalUrl = res.url;
+      const status = res.status;
+      controller.abort();
 
-      if (res.url && res.url.includes('slate.elfhosted.com')) {
+      if (finalUrl && finalUrl.includes('slate.elfhosted.com')) {
         return { ok: false, url: '', reason: 'resolved to an ElfHosted slate placeholder' };
       }
-      if (res.status >= 400) {
-        return { ok: false, url: '', reason: `HTTP ${res.status}` };
+      if (status >= 400) {
+        return { ok: false, url: '', reason: `HTTP ${status}` };
       }
-      return { ok: true, url: res.url || cand.url, reason: '' };
+      return { ok: true, url: finalUrl || cand.url, reason: '' };
     } catch (err) {
       return { ok: false, url: '', reason: (err as Error).message };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -201,16 +213,25 @@ export class WorkerGuildSession {
       // streamed as if it were the movie.
       if (rawUrl.startsWith('http')) {
         console.log(`[WorkerSession:${this.guildId}] Resolving stream URL redirect chain...`);
-        const res = await fetch(rawUrl, {
-          method: 'GET',
-          redirect: 'follow',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            Range: 'bytes=0-1023',
-          },
-          signal: AbortSignal.timeout(12000),
-        });
-        try { await res.body?.cancel(); } catch {}
+        // Aborted at the headers for the same reason probeCandidate() does -
+        // a slate response ignores Range and would otherwise stream in full.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        let res: Response;
+        try {
+          res = await fetch(rawUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              Range: 'bytes=0-1023',
+            },
+            signal: controller.signal,
+          });
+          controller.abort();
+        } finally {
+          clearTimeout(timer);
+        }
 
         if (res.url && res.url.includes('slate.elfhosted.com')) {
           console.warn(`[WorkerSession:${this.guildId}] Detected ElfHosted Slate IP-lock redirect (${res.url.substring(0, 80)}...). Fallback to direct resolution...`);
@@ -309,7 +330,20 @@ export class WorkerGuildSession {
           // of the list. The requested tier is still tried first and in full,
           // so quality preference is unchanged; this only guarantees there is
           // somewhere to fall back to before declaring a title unplayable.
-          const probeOrder = [...exactTier.slice(0, 8), ...otherTiers.slice(0, 6)];
+          //
+          // The budgets are deliberately small. Probes cannot be run in
+          // parallel - ElfHosted throttles concurrent requests, and even
+          // three at once made two of three healthy links time out - and a
+          // dead candidate costs 6-8s because ElfHosted is slow to give up
+          // before redirecting to its slate. Availability is also strongly
+          // correlated within a tier: for a title where 720p was unavailable,
+          // all twelve 720p candidates were slates while its 1080p ones
+          // played. So a few from the requested tier is a sufficient sample,
+          // and spending the rest of the budget on other tiers reaches a
+          // playable source far sooner than exhausting a tier that is clearly
+          // gone. A healthy title pays none of this: probing stops at the
+          // first candidate that answers, normally the first one tried.
+          const probeOrder = [...exactTier.slice(0, 3), ...otherTiers.slice(0, 5)];
 
           // Probed one at a time, stopping at the first that answers.
           //
