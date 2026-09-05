@@ -70,6 +70,8 @@ export interface SourceVideoInfo {
   width?: number;
   height?: number;
   codec?: string;
+  /** Real runtime of this file in seconds, from the container metadata. */
+  durationSeconds?: number;
 }
 
 /** Parses ffprobe's rational frame-rate strings ("24000/1001") into a number. */
@@ -110,6 +112,8 @@ export async function probeSourceMedia(
       '-v', 'quiet',
       '-print_format', 'json',
       '-show_streams',
+      // Container-level metadata, which is where the real runtime lives.
+      '-show_format',
       '-probesize', '5000000',
       '-analyzeduration', '3000000',
       '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n',
@@ -141,12 +145,22 @@ export async function probeSourceMedia(
     const videoStream = allStreams.find(
       (s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1
     );
+    // Prefer the container's duration and fall back to the video stream's own,
+    // since some remuxes carry it on only one of the two.
+    const parseSeconds = (v: unknown): number | undefined => {
+      const n = typeof v === 'string' ? parseFloat(v) : typeof v === 'number' ? v : NaN;
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
+    };
+    const durationSeconds =
+      parseSeconds(data.format?.duration) ?? parseSeconds(videoStream?.duration);
+
     const video: SourceVideoInfo | null = videoStream
       ? {
           fps: parseFrameRate(videoStream.avg_frame_rate) ?? parseFrameRate(videoStream.r_frame_rate),
           width: videoStream.width,
           height: videoStream.height,
           codec: videoStream.codec_name,
+          durationSeconds,
         }
       : null;
 

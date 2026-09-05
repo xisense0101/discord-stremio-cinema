@@ -43,8 +43,18 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
 
   const isPlaying = state.status === 'PLAYING';
   const currentTime = seekingTime !== null ? seekingTime : state.currentTime || 0;
-  const duration = state.duration || 7200;
-  const progressPercent = Math.min(100, Math.max(0, (currentTime / duration) * 100));
+  // 0 means the worker could not read a runtime from the source. Show elapsed
+  // time only rather than inventing one - the old `|| 7200` fallback claimed
+  // every movie was exactly 2 hours, so the total was wrong for anything that
+  // wasn't, and the progress bar and seek slider were scaled to a fiction.
+  const duration = state.duration > 0 ? state.duration : 0;
+  const hasDuration = duration > 0;
+  const progressPercent = hasDuration
+    ? Math.min(100, Math.max(0, (currentTime / duration) * 100))
+    : 0;
+  // Allow scrubbing past a known runtime only when there isn't one; the slider
+  // still needs some upper bound to be usable.
+  const seekMax = hasDuration ? duration : Math.max(currentTime + 600, 600);
 
   const formatTime = (secs: number) => {
     const h = Math.floor(secs / 3600);
@@ -129,14 +139,16 @@ export const PlayerRemote: React.FC<PlayerRemoteProps> = ({ state, onControl, lo
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs text-gray-400 font-mono">
           <span className="text-white font-semibold">{formatTime(currentTime)}</span>
-          <span className="text-gray-500">{formatTime(duration)}</span>
+          <span className="text-gray-500">
+            {hasDuration ? formatTime(duration) : '--:--'}
+          </span>
         </div>
 
         <div className="relative group">
           <input
             type="range"
             min={0}
-            max={duration}
+            max={seekMax}
             value={currentTime}
             onChange={handleSeekChange}
             onMouseUp={handleSeekCommit}

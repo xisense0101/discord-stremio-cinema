@@ -75,7 +75,14 @@ export class WorkerGuildSession {
   private sourceQuality: string = '';
   private sourceSizeBytes: number = 0;
   private qualityMismatch: boolean = false;
-  private duration: number = 7200;
+  /**
+   * Real runtime of the current file in seconds, read from the source during
+   * openMedia()'s probe. 0 means "not known yet" - the UI must not invent a
+   * length, which is what the old hardcoded 7200 default did: every movie
+   * showed a 2:00:00 total and a progress bar scaled to it, so a 95-minute
+   * film ended at ~79% and a 3-hour one sat pinned at 100% for an hour.
+   */
+  private duration: number = 0;
   private playbackStatus: 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ENDED' | 'ERROR' | 'INTERMISSION' = 'IDLE';
   private intermissionRemaining: number = 0;
   private intermissionTimer: NodeJS.Timeout | null = null;
@@ -187,6 +194,7 @@ export class WorkerGuildSession {
     this.sourceQuality = '';
     this.sourceSizeBytes = 0;
     this.qualityMismatch = false;
+    this.duration = 0;
 
     this.configureQuality(options.quality || '720p');
     console.log(`[WorkerSession:${this.guildId}] Opening media: "${this.currentTitle}" (Quality: ${this.qualityLabel})`);
@@ -309,6 +317,15 @@ export class WorkerGuildSession {
     // encoder has, while also making the encoder and the Discord packetizer
     // do ~25% more work per second of video for nothing. Capped at the
     // configured fps so a high-frame-rate source can't inflate the workload.
+    this.duration = probedMedia.video?.durationSeconds || 0;
+    if (this.duration > 0) {
+      const h = Math.floor(this.duration / 3600);
+      const m = Math.round((this.duration % 3600) / 60);
+      console.log(`[WorkerSession:${this.guildId}] Source runtime: ${h}h ${m}m (${this.duration}s)`);
+    } else {
+      console.warn(`[WorkerSession:${this.guildId}] Could not read a runtime from the source; the UI will show elapsed time only.`);
+    }
+
     const sourceFps = probedMedia.video?.fps;
     if (sourceFps && sourceFps >= 10) {
       this.outputFps = Math.min(sourceFps, config.stream.fps);
@@ -966,12 +983,18 @@ export class WorkerGuildSession {
   }
 
   async getState(): Promise<PlayerState> {
+    // The playback clock is driven by a 1s wall-clock tick, so it can drift a
+    // little past the end on a file whose real runtime we know. Clamp it so
+    // the UI never reports a position beyond the movie's length.
+    const position =
+      this.duration > 0 ? Math.min(this.currentPosition, this.duration) : this.currentPosition;
+
     return {
       status: this.playbackStatus,
       title: this.currentTitle,
-      currentTime: this.currentPosition,
+      currentTime: position,
       duration: this.duration,
-      bufferedTime: this.currentPosition + 30,
+      bufferedTime: this.duration > 0 ? Math.min(position + 30, this.duration) : position + 30,
       subtitles: this.subtitles.length > 0 ? this.subtitles : [
         { id: '1', label: 'English', language: 'en', kind: 'subtitles', active: this.activeSubtitle === 'English' },
         { id: '2', label: 'Spanish', language: 'es', kind: 'subtitles', active: this.activeSubtitle === 'Spanish' },
