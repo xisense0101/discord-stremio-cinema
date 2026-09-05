@@ -73,6 +73,8 @@ export class WorkerGuildSession {
   private currentImdbId?: string;
   /** Frame rate actually sent to Discord - matched to the source, capped at config.stream.fps. */
   private outputFps: number = config.stream.fps;
+  /** Source frame rate as actually measured; undefined when the probe failed. */
+  private detectedSourceFps?: number;
   private sourceRelease: string = '';
   private sourceQuality: string = '';
   private sourceSizeBytes: number = 0;
@@ -289,6 +291,7 @@ export class WorkerGuildSession {
     this.sourceSizeBytes = 0;
     this.qualityMismatch = false;
     this.duration = 0;
+    this.detectedSourceFps = undefined;
     this.finishingMedia = false;
     this.errorMessage = '';
 
@@ -457,7 +460,14 @@ export class WorkerGuildSession {
         ? fetchAvailableSubtitles(options.imdbId, options.type || 'movie').catch(() => [] as SubtitleTrackInfo[])
         : Promise.resolve([] as SubtitleTrackInfo[]),
       probeEmbeddedSubtitles(probeTargetUrl).catch(() => [] as SubtitleTrackInfo[]),
-      probeSourceMedia(probeTargetUrl, 5000).catch(() => ({ audioTracks: [] as AudioTrackInfo[], video: null })),
+      // 20s, not 5s. This single probe supplies the runtime, the frame rate
+      // and the audio tracks, and reading enough of a large file over a debrid
+      // CDN regularly takes longer than five seconds. When it timed out the
+      // failure was silent and cascaded: duration stayed 0, so neither the -t
+      // end-bound nor the playback-clock backstop could fire and the movie
+      // would never advance to the next queue item; frame rate fell back to
+      // the configured default; and audio degraded to a generic stereo track.
+      probeSourceMedia(probeTargetUrl, 20000).catch(() => ({ audioTracks: [] as AudioTrackInfo[], video: null })),
     ]);
     const probedAudioTracks = probedMedia.audioTracks;
 
@@ -478,6 +488,11 @@ export class WorkerGuildSession {
     }
 
     const sourceFps = probedMedia.video?.fps;
+    // Kept separately from outputFps: outputFps always has a value (it falls
+    // back to config), but subtitle matching must not treat that fallback as a
+    // measurement. Doing so picked a 30fps subtitle for a "30fps source" that
+    // was really 23.976 - confidently guaranteeing the desync.
+    this.detectedSourceFps = sourceFps && sourceFps >= 10 ? sourceFps : undefined;
     if (sourceFps && sourceFps >= 10) {
       this.outputFps = Math.min(sourceFps, config.stream.fps);
       console.log(`[WorkerSession:${this.guildId}] Source video: ${probedMedia.video?.width}x${probedMedia.video?.height} ${probedMedia.video?.codec} @ ${sourceFps}fps -> streaming at ${this.outputFps}fps`);
@@ -564,13 +579,13 @@ export class WorkerGuildSession {
       const englishCandidates = rawExternalSubs.filter(isEnglish);
       const enSub =
         pickBestSubtitle(englishCandidates, {
-          sourceFps: this.outputFps,
+          sourceFps: this.detectedSourceFps,
           sourceRelease: this.sourceRelease,
         }) || allSubs.find((s) => s.lang.toLowerCase().includes('english'));
 
       if (enSub) {
         const targetPath = `/tmp/sub_${this.guildId}.srt`;
-        console.log(`[WorkerSession:${this.guildId}] Auto-selecting English subtitle (${englishCandidates.length} candidates; chose ${enSub.fps ? enSub.fps + 'fps' : 'unknown fps'}${enSub.releaseName ? ` "${enSub.releaseName}"` : ''}) for a ${this.outputFps}fps source...`);
+        console.log(`[WorkerSession:${this.guildId}] Auto-selecting English subtitle (${englishCandidates.length} candidates; chose ${enSub.fps ? enSub.fps + 'fps' : 'unknown fps'}${enSub.releaseName ? ` "${enSub.releaseName}"` : ''}) for a ${this.detectedSourceFps ? this.detectedSourceFps + 'fps' : 'UNKNOWN fps'} source...`);
         let downloaded = false;
         if (enSub.url) {
           downloaded = await downloadSubtitleFile(enSub.url, targetPath);
@@ -580,8 +595,8 @@ export class WorkerGuildSession {
 
         // Residual frame-rate mismatch is corrected by rescaling the file:
         // this error grows with runtime, so no fixed delay can fix it.
-        if (downloaded && enSub.fps && this.outputFps) {
-          if (rescaleSrtForFps(targetPath, enSub.fps, this.outputFps)) {
+        if (downloaded && enSub.fps && this.detectedSourceFps) {
+          if (rescaleSrtForFps(targetPath, enSub.fps, this.detectedSourceFps)) {
             console.log(`[WorkerSession:${this.guildId}] Rescaled subtitles from ${enSub.fps}fps to ${this.outputFps}fps (drift would have been ~${Math.round(Math.abs(enSub.fps / this.outputFps - 1) * 7200)}s across a 2h film).`);
           }
         }
