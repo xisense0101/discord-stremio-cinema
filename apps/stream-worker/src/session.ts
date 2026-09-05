@@ -154,8 +154,17 @@ export class WorkerGuildSession {
     // the whole placeholder clip, and waiting on body.cancel() to unwind that
     // cost about 16s per candidate (measured: 145s to walk one dead tier).
     // Aborting the controller drops the connection immediately instead.
+    // 20s, not the few seconds that feel natural for a "quick check".
+    // ElfHosted's response time for these links varies from ~3s to well over
+    // 8s regardless of whether the link is good, so a tight timeout simply
+    // reintroduces the false negatives this probe exists to eliminate:
+    // measured at 8s, six of eight candidates aborted, including 1080p links
+    // independently confirmed to serve real video. Wrongly declaring a
+    // watchable film unplayable is far worse than a slow start, and the cost
+    // is only ever paid when candidates are actually failing - a healthy
+    // title answers on the first probe.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch(cand.url, {
         method: 'GET',
