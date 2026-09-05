@@ -85,6 +85,8 @@ export class WorkerGuildSession {
   private duration: number = 0;
   /** Re-entrancy guard: several signals can conclude the same movie is over. */
   private finishingMedia: boolean = false;
+  /** Surfaced to the UI so a failure says why, instead of just going blank. */
+  private errorMessage: string = '';
   private playbackStatus: 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ENDED' | 'ERROR' | 'INTERMISSION' = 'IDLE';
   private intermissionRemaining: number = 0;
   private intermissionTimer: NodeJS.Timeout | null = null;
@@ -198,12 +200,18 @@ export class WorkerGuildSession {
     this.qualityMismatch = false;
     this.duration = 0;
     this.finishingMedia = false;
+    this.errorMessage = '';
 
     this.configureQuality(options.quality || '720p');
     console.log(`[WorkerSession:${this.guildId}] Opening media: "${this.currentTitle}" (Quality: ${this.qualityLabel})`);
 
     // Ensure playback URL is always resolved from Worker IP to avoid ElfHosted IP-lock mismatches
     let streamUrlToUse = options.streamUrl;
+    // "Nothing playable exists" has to escape the catch below, which is there
+    // to tolerate a flaky resolver call and fall through to whatever URL the
+    // caller supplied - not to swallow a definitive verdict that every source
+    // for this title is dead.
+    let unplayable: Error | null = null;
     if (options.imdbId) {
       try {
         console.log(`[WorkerSession:${this.guildId}] Resolving verified working stream from Worker IP for ${options.type || 'movie'} ${options.imdbId}...`);
@@ -261,17 +269,30 @@ export class WorkerGuildSession {
               // try next candidate
             }
           }
-          if (!foundWorking && streams[0]?.url) {
-            streamUrlToUse = streams[0].url;
-            this.sourceRelease = streams[0].title;
-            this.sourceQuality = streams[0].quality;
-            this.sourceSizeBytes = streams[0].sizeBytes || 0;
-            this.qualityMismatch = normalizeQualityTier(streams[0].quality) !== requestedQ;
+          if (!foundWorking) {
+            // Every candidate was a slate or an error. Falling back to
+            // streams[0] here (as this used to) hands playback a link already
+            // proven bad: ElfHosted answers an IP-locked link with a ~2 minute
+            // placeholder clip, so the session dutifully "played" a 2 minute
+            // slate, reported it as the movie - runtime and all - and then
+            // ended. Reported as the stream buffering and never starting.
+            // Fail loudly instead so the caller can move on to something that
+            // will actually play.
+            unplayable = new Error(
+              `No playable source for "${options.title}" - all ${probeOrder.length} candidates returned an ElfHosted slate or an error (the debrid links are IP-locked or expired).`
+            );
           }
         }
       } catch (err) {
         console.warn(`[WorkerSession:${this.guildId}] Worker IP stream resolution notice:`, (err as Error).message);
       }
+    }
+
+    if (unplayable) {
+      console.error(`[WorkerSession:${this.guildId}] ${unplayable.message}`);
+      this.playbackStatus = 'ERROR';
+      this.errorMessage = unplayable.message;
+      throw unplayable;
     }
 
     this.currentStreamUrl = streamUrlToUse;
@@ -547,7 +568,18 @@ export class WorkerGuildSession {
     // would have applied, so it can never be silently clobbered. Scaling
     // BEFORE burning in subtitles also keeps subtitle font size consistent
     // regardless of the source file's native resolution.
-    const vfFilters: string[] = [`scale=${this.streamWidth}:${this.streamHeight}`];
+    // `scale=W:H` on its own forces the frame into the target box and ignores
+    // the source's shape, so anything not already 16:9 came out distorted:
+    // a 1280x532 scope release (verified live - Spider-Man: No Way Home)
+    // was being stretched vertically by about 35%, making everyone on screen
+    // tall and thin. force_original_aspect_ratio=decrease fits the frame
+    // inside the box keeping its proportions, and pad centres it with black
+    // bars. The -2 rounding keeps both dimensions even, which H.264's 4:2:0
+    // chroma subsampling requires.
+    const vfFilters: string[] = [
+      `scale=${this.streamWidth}:${this.streamHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+      `pad=${this.streamWidth}:${this.streamHeight}:(ow-iw)/2:(oh-ih)/2:color=black`,
+    ];
 
     if (this.activeSubtitle !== 'Off' && this.activeSubtitlePath && fs.existsSync(this.activeSubtitlePath)) {
       // Offset PTS by seekSeconds minus subtitleDelaySeconds for frame-accurate timing
@@ -1110,6 +1142,7 @@ export class WorkerGuildSession {
       fps: this.outputFps,
       resolution: this.qualityLabel,
       stallCount: 0,
+      errorMessage: this.errorMessage || undefined,
       updatedAt: Date.now(),
       sourceRelease: this.sourceRelease || undefined,
       sourceQuality: this.sourceQuality || undefined,
