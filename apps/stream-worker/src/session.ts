@@ -672,9 +672,25 @@ export class WorkerGuildSession {
       this.progressInterval = null;
     }
 
+    // 'veryfast' rather than 'ultrafast', deliberately spending ffmpeg's spare
+    // CPU to take load off Node's.
+    //
+    // Profiling a live stream showed the bottleneck is not the encoder: ffmpeg
+    // sits around 30% of a core while the single Node thread that packetizes
+    // and sends RTP runs at 96-97%, and almost none of that is real work -
+    // node_datachannel (the actual SRTP/send path) accounts for 0.03% of
+    // samples, with the rest going to V8's per-packet async bookkeeping. At
+    // 97% there is no headroom, so any hiccup delays packets, which is what
+    // shows up as the picture slowing down and the audio pulling ahead of the
+    // burned-in subtitles.
+    //
+    // Node's cost scales with packet count, so the lever is bits on the wire.
+    // ultrafast is a poor use of them; veryfast compresses meaningfully better
+    // for CPU the encoder has to spare, which buys back the bitrate reduction
+    // below at similar visual quality.
     const encoder = Encoders.software({
       x264: {
-        preset: 'ultrafast',
+        preset: 'veryfast',
         tune: 'zerolatency',
       },
     });
@@ -1087,13 +1103,19 @@ export class WorkerGuildSession {
       this.streamBitrateKbps = 1200;
       this.streamMaxBitrateKbps = 1800;
     } else {
-      // Default 720p HD
+      // Default 720p HD.
+      // 2000 rather than 2500: Node's packetizing thread is the bottleneck at
+      // ~97% of a core, and its cost scales with packet count, so 20% fewer
+      // bits on the wire is 20% less load on the part that is actually
+      // saturated. The veryfast preset above compresses better than the
+      // ultrafast one this replaced, so the picture should hold up despite
+      // the lower ceiling.
       this.currentQuality = '720p';
       this.qualityLabel = '720p HD';
       this.streamWidth = 1280;
       this.streamHeight = 720;
-      this.streamBitrateKbps = 2500;
-      this.streamMaxBitrateKbps = 2500;
+      this.streamBitrateKbps = 2000;
+      this.streamMaxBitrateKbps = 2200;
     }
   }
 

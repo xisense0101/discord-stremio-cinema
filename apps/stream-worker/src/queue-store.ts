@@ -51,18 +51,37 @@ type QueueMap = Record<string, StoredQueueItem[]>;
  * reads and writes this one file, which sits on the container's mounted data
  * volume and so also survives worker restarts and redeploys.
  */
+/**
+ * The file is read once and then served from memory, with every write going
+ * through to disk.
+ *
+ * This process is also packetizing video, and all of that runs on the one
+ * Node thread - measured at ~97% of a core while streaming. readFileSync plus
+ * JSON.parse of a ~20KB queue on every request therefore lands directly in
+ * the path that sends RTP packets, and the web UI polls player state every
+ * two seconds. This process is the only writer, so a cache cannot go stale.
+ */
+let cache: QueueMap | null = null;
+
 function readAll(): QueueMap {
+  if (cache) return cache;
   try {
-    if (!fs.existsSync(QUEUE_FILE)) return {};
+    if (!fs.existsSync(QUEUE_FILE)) {
+      cache = {};
+      return cache;
+    }
     const parsed = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
-    return parsed && typeof parsed === 'object' ? (parsed as QueueMap) : {};
+    cache = parsed && typeof parsed === 'object' ? (parsed as QueueMap) : {};
+    return cache;
   } catch (err) {
     console.warn('[QueueStore] Read notice:', (err as Error).message);
-    return {};
+    cache = {};
+    return cache;
   }
 }
 
 function writeAll(map: QueueMap): void {
+  cache = map;
   try {
     ensureDataDir();
     // Write-then-rename so a crash mid-write can never leave a truncated file

@@ -26,16 +26,31 @@ const DEFAULT_SETTINGS: UserSettings = {
   intermissionSeconds: 120,
 };
 
+/**
+ * Cached in memory after the first read, with writes going through to disk.
+ * Same reasoning as the queue store: this process packetizes video on the one
+ * Node thread, so synchronous file reads on every request land in the path
+ * that sends RTP packets. This process is the only writer.
+ */
+let cache: UserSettings | null = null;
+
 export function getStoredSettings(): UserSettings {
+  if (cache) return cache;
   try {
     if (!fs.existsSync(SETTINGS_FILE)) {
-      return { ...DEFAULT_SETTINGS };
+      const defaults: UserSettings = { ...DEFAULT_SETTINGS };
+      cache = defaults;
+      return defaults;
     }
     const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const merged: UserSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    cache = merged;
+    return merged;
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    const defaults: UserSettings = { ...DEFAULT_SETTINGS };
+    cache = defaults;
+    return defaults;
   }
 }
 
@@ -43,6 +58,7 @@ export function saveStoredSettings(updates: Partial<UserSettings>): UserSettings
   try {
     ensureDataDir();
     const merged = { ...getStoredSettings(), ...updates };
+    cache = merged;
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2), 'utf8');
     return merged;
   } catch (err) {
