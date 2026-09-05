@@ -38,6 +38,16 @@ export interface SubtitleTrackInfo {
   isEmbedded?: boolean;
   streamIndex?: number;
   codec?: string;
+  /**
+   * Frame rate the subtitle was timed against, from OpenSubtitles' fpsMilli.
+   * Decisive for sync: a 25fps subtitle over a 23.976fps source drifts by
+   * 4.3%, roughly five minutes across a two hour film, and no constant delay
+   * can correct that.
+   */
+  fps?: number;
+  /** Release the subtitle was timed for, used to match it to the file playing. */
+  releaseName?: string;
+  fileName?: string;
 }
 
 export interface AudioTrackInfo {

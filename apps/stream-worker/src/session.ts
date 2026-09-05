@@ -6,6 +6,8 @@ import {
   downloadSubtitleFile,
   probeEmbeddedSubtitles,
   extractEmbeddedSubtitle,
+  pickBestSubtitle,
+  rescaleSrtForFps,
   probeEmbeddedAudioTracks,
   probeSourceMedia,
   SubtitleTrackInfo,
@@ -551,20 +553,37 @@ export class WorkerGuildSession {
       });
       console.log(`[WorkerSession:${this.guildId}] Loaded ${allSubs.length} subtitle tracks (${embeddedSubs.length} embedded, ${rawExternalSubs.length} external).`);
 
-      // Auto-select English subtitles by default
-      const enSub = rawExternalSubs.find((s) => {
+      // Auto-select English subtitles by default. Among the English
+      // candidates, pick the one whose frame rate and release actually match
+      // the file being played rather than whichever the API listed first -
+      // that arbitrary choice is what left most films out of sync.
+      const isEnglish = (s: SubtitleTrackInfo) => {
         const l = s.lang.toLowerCase();
         return l === 'english' || l === 'en' || l.startsWith('en-') || l.includes('english');
-      }) || allSubs.find((s) => s.lang.toLowerCase().includes('english'));
+      };
+      const englishCandidates = rawExternalSubs.filter(isEnglish);
+      const enSub =
+        pickBestSubtitle(englishCandidates, {
+          sourceFps: this.outputFps,
+          sourceRelease: this.sourceRelease,
+        }) || allSubs.find((s) => s.lang.toLowerCase().includes('english'));
 
       if (enSub) {
         const targetPath = `/tmp/sub_${this.guildId}.srt`;
-        console.log(`[WorkerSession:${this.guildId}] Auto-selecting English subtitle track (${enSub.lang})...`);
+        console.log(`[WorkerSession:${this.guildId}] Auto-selecting English subtitle (${englishCandidates.length} candidates; chose ${enSub.fps ? enSub.fps + 'fps' : 'unknown fps'}${enSub.releaseName ? ` "${enSub.releaseName}"` : ''}) for a ${this.outputFps}fps source...`);
         let downloaded = false;
         if (enSub.url) {
           downloaded = await downloadSubtitleFile(enSub.url, targetPath);
         } else if (enSub.isEmbedded && enSub.streamIndex !== undefined) {
           downloaded = await extractEmbeddedSubtitle(this.resolvedCdnUrl || this.currentStreamUrl, enSub.streamIndex, targetPath);
+        }
+
+        // Residual frame-rate mismatch is corrected by rescaling the file:
+        // this error grows with runtime, so no fixed delay can fix it.
+        if (downloaded && enSub.fps && this.outputFps) {
+          if (rescaleSrtForFps(targetPath, enSub.fps, this.outputFps)) {
+            console.log(`[WorkerSession:${this.guildId}] Rescaled subtitles from ${enSub.fps}fps to ${this.outputFps}fps (drift would have been ~${Math.round(Math.abs(enSub.fps / this.outputFps - 1) * 7200)}s across a 2h film).`);
+          }
         }
 
         if (downloaded && fs.existsSync(targetPath)) {
